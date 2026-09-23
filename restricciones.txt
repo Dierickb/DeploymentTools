@@ -1,0 +1,99 @@
+## Reglas de trabajo para este proyecto
+
+### 1. Entorno corporativo y dependencias
+
+* Estamos trabajando en un **entorno corporativo**, por lo que debemos limitar al máximo el uso de librerías, paquetes o herramientas externas.
+* Prioriza siempre las herramientas ya disponibles y aprobadas en el entorno, especialmente:
+
+  * **PowerShell**
+  * **PsTools / PSTools**
+  * Herramientas y componentes nativos de **Microsoft / Windows**
+* Antes de introducir una librería, paquete o dependencia externa, **consúltame primero y espera mi autorización**.
+* Si existe una solución equivalente utilizando PowerShell, PsTools o herramientas nativas de Microsoft, **prioriza esa alternativa**.
+
+### 2. Mantener el código existente
+
+* **No reescribas el proyecto desde cero.**
+* Trabaja directamente sobre la implementación existente.
+* Mantén la estructura, funcionalidades y lógica que ya tenemos siempre que sea posible.
+* **No elimines archivos, funciones, variables, lógica o funcionalidades sin mi autorización explícita.**
+* Si consideras que algo debería eliminarse, reemplazarse o refactorizarse, primero explícame por qué y **pregúntame antes de hacerlo**.
+
+### 3. Cambios en el código
+
+* Antes de realizar cualquier modificación al código, **explícame qué propones cambiar y por qué**.
+* **Espera mi autorización antes de escribir o modificar archivos.**
+* Cuando autorice el cambio, modifica directamente el código existente.
+* Evita hacer cambios no relacionados con la tarea solicitada.
+* Mantén los cambios lo más pequeños y controlados posible.
+* No hagas refactorizaciones adicionales "por limpieza" sin consultarme.
+
+### 4. Git y ramas
+
+* **Cada cambio debe realizarse en una rama nueva.**
+* No trabajes directamente sobre `main` ni sobre la rama principal.
+* Antes de crear una rama, indícame qué rama propones crear y qué cambio contendrá.
+* **No hagas `git add`, `git commit` ni `git push` sin que yo te lo autorice explícitamente.**
+* Después de realizar los cambios, muéstrame qué archivos fueron modificados y qué se cambió.
+* Espera mi autorización antes de hacer:
+
+  1. `git add`
+  2. `git commit`
+  3. `git push`
+* **Nunca hagas merge automáticamente.**
+* El merge de la rama a `main` o a cualquier otra rama **solo se realizará cuando yo lo indique explícitamente**.
+
+### 5. Seguridad ante cambios destructivos
+
+* No ejecutes comandos destructivos sin autorización.
+* No elimines archivos ni directorios.
+* No hagas `git reset --hard`, `git clean`, `git checkout` destructivo, `git restore` sobre cambios existentes ni comandos equivalentes sin consultarme previamente.
+* Si un comando puede sobrescribir o eliminar trabajo existente, detente y pregúntame antes.
+
+### 6. Forma de trabajo
+
+Para cada solicitud que implique cambios en el proyecto, sigue este flujo:
+
+**Paso 1 — Analizar**
+
+* Revisa el código existente y entiende cómo funciona.
+* No modifiques nada todavía.
+
+**Paso 2 — Proponer**
+
+* Explícame brevemente:
+
+  * Qué archivos modificarías.
+  * Qué cambios realizarías.
+  * Por qué son necesarios.
+  * Qué herramientas/dependencias utilizarías.
+  * Qué rama propones crear.
+
+**Paso 3 — Esperar autorización**
+
+* No escribas código ni modifiques archivos hasta que yo confirme.
+
+**Paso 4 — Implementar**
+
+* Una vez autorizado, modifica directamente el código existente.
+* No elimines funcionalidades sin autorización.
+
+**Paso 5 — Validar**
+
+* Muéstrame los cambios realizados.
+* Ejecuta únicamente las validaciones necesarias y seguras.
+* Si detectas algo adicional que debería cambiarse, detente y consúltame.
+
+**Paso 6 — Git**
+
+* No hagas `stage`, `commit` ni `push` automáticamente.
+* Espera instrucciones explícitas mías.
+
+**Paso 7 — Merge**
+
+* No hagas merge automáticamente.
+* Solo haz merge cuando yo lo indique explícitamente.
+
+### Regla principal
+
+**No asumas autorización. Si una acción modifica, elimina, agrega una dependencia o publica cambios en Git, pregúntame primero.**
