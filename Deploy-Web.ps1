@@ -25,8 +25,8 @@
       - El progreso en vivo usa el mismo mecanismo: un runspace aparte que
         le pasa una cola thread-safe (-ProgressQueue) a
         Invoke-ThrottledDeployment, mas el tail incremental del .log. Lo que
-        en WPF era un DispatcherTimer cada 250 ms, aca es el navegador
-        pidiendo /api/progress cada 500 ms.
+        en WPF era un DispatcherTimer (Ui.GuiPollMs), aca es el navegador
+        pidiendo /api/progress cada Ui.WebPollMs.
 
     QUE SE PUEDE PROBAR EN UNA MAC
     Toda la interfaz: catalogo de tareas, lectura de imports\\, validaciones,
@@ -42,7 +42,8 @@
     un despliegue contra cientos de equipos.
 
 .PARAMETER Port
-    Puerto local. Por defecto 8787.
+    Puerto local. Sin pasar: Ui.WebPort de
+    Module\Deployment\Deployment.Constants.psd1.
 
 .PARAMETER NoBrowser
     No abre el navegador solo; imprime la URL y espera.
@@ -54,7 +55,8 @@
 
 .PARAMETER MaxTareas
     Cuantas tareas DISTINTAS pueden correr a la vez (por ejemplo, desplegar
-    una aplicacion mientras se copian archivos). Por defecto 2. La misma
+    una aplicacion mientras se copian archivos), de 1 a la cantidad de
+    tareas del catalogo. Sin pasar: Ui.DefaultMaxTasks. La misma
     tarea nunca corre dos veces a la vez: compartiria el log. Ojo con la
     carga: la concurrencia real es la suma de los throttle de cada tarea.
 
@@ -68,11 +70,12 @@
 #>
 [CmdletBinding()]
 param(
-    [int]$Port = 8787,
+    # Port y MaxTareas: default y rango se resuelven despues de importar el
+    # modulo, porque un [ValidateRange()] solo acepta literales.
+    [int]$Port,
     [switch]$NoBrowser,
     [switch]$Simular,
-    [ValidateRange(1, 7)]
-    [int]$MaxTareas = 2
+    [int]$MaxTareas
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,7 +85,14 @@ $script:ModulePath = Join-Path $script:Root (Join-Path 'Module' (Join-Path 'Depl
 Import-Module $script:ModulePath -Force
 
 $script:Config  = Get-DeploymentConfig -WarningAction SilentlyContinue
-$script:Tasks   = Get-DeploymentTaskCatalog
+$script:Tasks   = Get-DeploymentTaskCatalog -Config $script:Config
+
+if (-not $PSBoundParameters.ContainsKey('Port'))      { $Port = $script:Config.Ui.WebPort }
+if (-not $PSBoundParameters.ContainsKey('MaxTareas')) { $MaxTareas = $script:Config.Ui.DefaultMaxTasks }
+if ($MaxTareas -lt 1 -or $MaxTareas -gt $script:Tasks.Count) {
+    Write-Host "-MaxTareas tiene que estar entre 1 y $($script:Tasks.Count) (la cantidad de tareas)." -ForegroundColor Red
+    return
+}
 $script:Token   = [guid]::NewGuid().ToString('N')
 $script:EsWindows = ($null -eq $PSVersionTable.Platform) -or ($PSVersionTable.Platform -eq 'Win32NT')
 
@@ -682,7 +692,9 @@ $script:Html = @'
 </div>
 <script>
 const TOKEN = new URLSearchParams(location.search).get('t') || '';
-let TAREAS = [], actual = null, poll = null, MAX = 2;
+// MAX, POLL_MS y COPIADO_MS llegan del servidor en /api/init (salen de
+// Deployment.Constants.psd1); hasta entonces no se usan.
+let TAREAS = [], actual = null, poll = null, MAX = 0, POLL_MS = 0, COPIADO_MS = 0;
 // Multitarea: una entrada por tarea ejecutada. estado = lo ultimo que dijo
 // el servidor; buf = las lineas de SU consola (cada tarea tiene la suya,
 // asi al cambiar de ficha se ve la consola de esa tarea completa).
@@ -827,7 +839,7 @@ function ejecutar(){
       logEn(r.tarea, '=== ' + r.label + ' - ' + r.total + ' equipos - throttle ' + r.throttle + ' ===', 'sum');
       logEn(r.tarea, 'Llamando a ' + t.Function + (r.simulado ? '  [SIMULACION]' : ''), 'mut');
       verCorrida(r.tarea);   // lo que se acaba de lanzar pasa a la vista
-      if (!poll) poll = setInterval(progreso, 500);
+      if (!poll) poll = setInterval(progreso, POLL_MS);
     });
 }
 
@@ -966,7 +978,7 @@ function pintarDetalle(r){
 
 function copiarHostnames(){
   const texto = detalleItems.map(i => typeof i === 'string' ? i : i.equipo).join('\n');
-  const listo = () => { $('btnCopiar').textContent = 'Copiado'; setTimeout(() => $('btnCopiar').textContent = 'Copiar hostnames', 1500); };
+  const listo = () => { $('btnCopiar').textContent = 'Copiado'; setTimeout(() => $('btnCopiar').textContent = 'Copiar hostnames', COPIADO_MS); };
   if (navigator.clipboard && window.isSecureContext){
     navigator.clipboard.writeText(texto).then(listo, () => copiarViejo(texto, listo));
   } else { copiarViejo(texto, listo); }
@@ -1013,7 +1025,7 @@ function progreso(){
       if (n !== detalleN || (v.estado.terminado && !detalleTerm)) cargarDetalle();
     }
     if (!activas && poll){ clearInterval(poll); poll = null; }
-    if (activas && !poll) poll = setInterval(progreso, 500);
+    if (activas && !poll) poll = setInterval(progreso, POLL_MS);
   });
 }
 
@@ -1042,7 +1054,9 @@ document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => {
 
 api('/api/init').then(r => {
   TAREAS = r.tareas;
-  MAX = r.maxTareas || 2;
+  MAX = r.maxTareas;
+  POLL_MS = r.pollMs;
+  COPIADO_MS = r.copiadoMs;
   $('tRoot').textContent = r.root;
   if (r.simulado) $('tSim').innerHTML = '<span class="sim">SIMULACION</span>';
   pintarRail();
@@ -1112,6 +1126,8 @@ function Invoke-Ruta {
                 root      = $script:Root
                 simulado  = [bool]$Simular
                 maxTareas = $MaxTareas
+                pollMs    = $script:Config.Ui.WebPollMs
+                copiadoMs = $script:Config.Ui.CopyFeedbackMs
             })
             return
         }

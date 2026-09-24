@@ -14,6 +14,11 @@ el detalle completo de qué se corrigió respecto a la versión anterior.
    ruta del agente de Nessus y UUID del scan. El código no trae ninguno
    hardcodeado — si falta uno, la tarea que lo necesita avisa exactamente
    qué completar. `config.psd1` no debería versionarse ni salir del equipo.
+   Ahí también podés ajustar timeouts, throttle (general o por tarea),
+   success codes y rutas de herramientas: solo los valores de la sección
+   `Tunable` de `Module\Deployment\Deployment.Constants.psd1`, que es
+   donde está el default de cada uno. Cualquier otra clave se ignora con
+   un aviso.
 3. Verificá que `psexec.exe` esté en el PATH (o en la misma carpeta
    desde donde corrés los scripts).
 
@@ -152,15 +157,17 @@ archivo dentro de `imports\`.
 Deployment/
   Module/Deployment/
     Deployment.psd1 / .psm1     Manifiesto y módulo raíz
+    Deployment.Constants.psd1   Valores fijos y defaults ajustables (sin magic strings en el código)
     Classes/
       BaseDeploy.ps1             Ping, copia remota, PsExec, deploy de apps, Tenable
       KbWindows.ps1               Extiende BaseDeploy: flujo de parches KB
     Private/                      Interno del módulo, NO exportado
+      Get-DeploymentConstants.ps1 Lee Deployment.Constants.psd1
       Get-DeploymentRoot.ps1      Resuelve la raíz del proyecto (sin rutas hardcodeadas)
       Invoke-ThrottledDeployment.ps1  El runner de jobs (reemplaza el bloque duplicado)
       Write-DeploymentSummary.ps1     Resumen final OK/fallidos (no existía antes)
     Public/                       La API: lo que se llama desde afuera
-      Get-DeploymentConfig.ps1    Carga config\config.psd1
+      Get-DeploymentConfig.ps1    Constantes + lo ajustable de config\config.psd1
       Read-ComputerList.ps1       Lee y limpia un archivo de hostnames
       Invoke-DeployApp.ps1        Reemplaza execute\deploy_app.ps1
       Invoke-CopyFiles.ps1        Reemplaza execute\copy_files.ps1

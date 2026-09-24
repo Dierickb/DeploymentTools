@@ -9,6 +9,11 @@
 # (\\...\Updates\2026-08+++´\\\\\\\\\install.cmd). Acá -KbFolder es
 # obligatorio y se valida contra el patrón "YYYY-MM" antes de usarlo, en
 # vez de aceptar cualquier string silenciosamente.
+#
+# La validación está en el cuerpo y no en un [ValidatePattern()]: un
+# atributo solo acepta literales, y el patrón vive en
+# Deployment.Constants.psd1 (Validation.KbFolderPattern), el mismo que usan
+# las interfaces para validar el formulario.
 function Invoke-KbDeployment {
     [CmdletBinding()]
     param(
@@ -20,20 +25,20 @@ function Invoke-KbDeployment {
         [string[]]$KbPatch,
 
         [Parameter(Mandatory)]
-        [ValidatePattern('^\d{4}-\d{2}(-\d{2})?[a-z0-9]*$')]
         [string]$KbFolder,
 
         [int[]]$SuccessCodes,
 
         [string]$InstallPath,
 
-        [int]$ElapsedTime = 600,
+        # En segundos. Sin pasar: el ElapsedTime de la tarea 'kb' en la config.
+        [int]$ElapsedTime,
 
         [int]$ThrottleLimit,
 
         [string]$LogPath,
 
-        [string]$LogMutexName = 'Global\kb_deploy',
+        [string]$LogMutexName,
 
         [switch]$ShowProgress,
 
@@ -46,10 +51,17 @@ function Invoke-KbDeployment {
     )
 
     $config = Get-DeploymentConfig
+    if ($KbFolder -notmatch $config.Validation.KbFolderPattern) {
+        throw "-KbFolder '$KbFolder' no tiene un formato valido. Debe ser YYYY-MM (ej. 2026-09), opcionalmente con dia y sufijo (2026-08-24h2)."
+    }
+
+    $task = $config.Tasks.kb
     if (-not $SuccessCodes) { $SuccessCodes = $config.DefaultSuccessCodes }
     if (-not $InstallPath) { $InstallPath = $config.UpdatesPath }
-    if (-not $ThrottleLimit) { $ThrottleLimit = $config.DefaultThrottleLimit }
-    if (-not $LogPath) { $LogPath = Join-Path $config.LogsPath 'kb_deploy.log' }
+    if (-not $ThrottleLimit) { $ThrottleLimit = $task.ThrottleLimit }
+    if (-not $PSBoundParameters.ContainsKey('ElapsedTime')) { $ElapsedTime = $task.ElapsedTime }
+    if (-not $LogPath) { $LogPath = Join-Path $config.LogsPath $task.LogFile }
+    if (-not $LogMutexName) { $LogMutexName = $task.MutexName }
 
     $classPaths = @(
         Join-Path $PSScriptRoot '..\Classes\BaseDeploy.ps1'
@@ -91,7 +103,7 @@ function Invoke-KbDeployment {
     $results = Invoke-ThrottledDeployment -ComputerList $ComputerList -Action $action `
         -LogPath $LogPath -LogMutexName $LogMutexName -ThrottleLimit $ThrottleLimit `
         -ActionArgs $actionArgs -ClassPaths $classPaths -ShowProgress:$ShowProgress `
-        -ProgressQueue $ProgressQueue -CancelFlag $CancelFlag
+        -ProgressQueue $ProgressQueue -CancelFlag $CancelFlag -Settings $config
 
     return Write-DeploymentSummary -Results $results -LogPath $LogPath
 }

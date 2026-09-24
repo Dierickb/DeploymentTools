@@ -120,7 +120,7 @@ class KbWindows : BaseDeploy {
                 throw "Falta UpdatesPath en config\config.psd1 (carpeta de actualizaciones del repositorio)."
             }
             $this.WriteLogSafe("INSTALANDO KB $kbFolder")
-            $fullPath = "$installPath\$kbFolder\install.cmd"
+            $fullPath = "$installPath\$kbFolder\$([BaseDeploy]::Settings.Remote.KbInstallScript)"
             $this.WriteLogSafe("Ruta install: $fullPath")
             
             $result = $this.DeployApp($fullPath, $SuccessCodes,$elapsedTime)

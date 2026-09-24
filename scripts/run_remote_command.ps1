@@ -8,7 +8,8 @@
 param(
     [Parameter(Mandatory)][string]$ComputersFile,
     [Parameter(Mandatory)][string]$Command,
-    [int]$ElapsedTimeMinutes = 0,
+    # Sin pasar: el timeout de la tarea 'remotecmd' en la config.
+    [int]$ElapsedTimeMinutes,
     [int]$ThrottleLimit,
     [switch]$CompareVersion,
     [version]$MinVersion,
@@ -20,10 +21,20 @@ Import-Module (Join-Path $root 'Module\Deployment\Deployment.psd1') -Force
 
 $config = Get-DeploymentConfig
 $computersPath = if (Test-Path $ComputersFile) { $ComputersFile } else { Join-Path $config.ImportsPath $ComputersFile }
-$computers = Read-ComputerList -Path $computersPath
+$computers = @(Read-ComputerList -Path $computersPath)
 
-$summary = Invoke-RemoteCommand -ComputerList $computers -Command $Command -RunAsSystem -Elevated `
-    -ElapsedTime ($ElapsedTimeMinutes * 60) -ThrottleLimit $ThrottleLimit `
-    -CompareVersion:$CompareVersion -MinVersion $MinVersion -UpdateTenableAfter:$UpdateTenableAfter
+$params = @{
+    ComputerList       = $computers
+    Command            = $Command
+    RunAsSystem        = $true
+    Elevated           = $true
+    ThrottleLimit      = $ThrottleLimit
+    CompareVersion     = $CompareVersion
+    MinVersion         = $MinVersion
+    UpdateTenableAfter = $UpdateTenableAfter
+}
+if ($PSBoundParameters.ContainsKey('ElapsedTimeMinutes')) { $params.ElapsedTime = $ElapsedTimeMinutes * 60 }
+
+$summary = Invoke-RemoteCommand @params
 
 exit ($(if ($summary.Failed -gt 0) { 1 } else { 0 }))

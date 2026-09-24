@@ -49,10 +49,12 @@ nunca duplican lógica entre sí:
 
 ```
 Deployment.psd1 / .psm1     Manifiesto y módulo raíz (carga todo, exporta 7 funciones)
+Deployment.Constants.psd1   Todos los valores fijos y los defaults ajustables (ver 3.6)
 Classes/
   BaseDeploy.ps1             Ping, copia remota, PsExec, deploy de apps, Tenable
   KbWindows.ps1               Extiende BaseDeploy: flujo de parches KB
 Private/                      Interno del módulo, NO exportado
+  Get-DeploymentConstants.ps1
   Get-DeploymentRoot.ps1
   Invoke-ThrottledDeployment.ps1
   Write-DeploymentSummary.ps1
@@ -98,9 +100,9 @@ instancia una por equipo, dentro del job de ese equipo:
 
 - `WriteLogSafe($message)` — escribe una línea al log compartido,
   protegida por un `Mutex` con nombre (`Global\...`) para que jobs en
-  paralelo no se pisen escribiendo al mismo archivo. Espera hasta 5s
-  por el mutex; si no lo consigue, descarta la línea en silencio (no
-  hace throw, no retry).
+  paralelo no se pisen escribiendo al mismo archivo. Espera hasta
+  `LogMutexWaitMs` por el mutex; si no lo consigue, descarta la línea en
+  silencio (no hace throw, no retry).
 - `TestPingEquipo()` — ping ICMP simple. Devuelve un `[pscustomobject]`
   con `.Success`/`.msg`/etc. — **nunca** `$true`/`$false` ni `$null` a
   secas. Esto importa: en el código viejo, chequear el resultado con
@@ -108,8 +110,8 @@ instancia una por equipo, dentro del job de ese equipo:
   siempre es "truthy"), así que un ping fallido nunca se detectaba.
   Todo el código nuevo chequea `.Success` explícitamente.
 - `CopyRemote(...)` — copia un archivo/carpeta a `\\<equipo>\C$\...`,
-  y confirma que llegó (reintenta `Test-Path` hasta 30 veces con 1s de
-  espera) antes de darlo por bueno.
+  y confirma que llegó (reintenta `Test-Path` hasta `CopyVerifyRetries`
+  veces) antes de darlo por bueno.
 - `InvokePsExec($command, $runAsSystem, $elevated, $elapsedTime)` —
   el corazón de todo: lanza `psexec.exe` como proceso hijo, lee su
   salida de forma **asíncrona** (`ReadToEndAsync`) para poder aplicar
@@ -121,8 +123,17 @@ instancia una por equipo, dentro del job de ese equipo:
   contra una lista de códigos de éxito (0, o los de reinicio pendiente
   de MSI: 3010/1641/1707/2359302).
 - `UpdateTenable()` — dispara un scan de Nessus/Tenable local en el
-  equipo remoto vía `nessuscli.exe scan-triggers`, con un timeout fijo
-  de 420s.
+  equipo remoto vía `nessuscli.exe scan-triggers`, con un timeout de
+  `TenableTimeoutSeconds`.
+
+Todos esos valores (timeouts, reintentos, ruta de `psexec.exe`, formato
+del log) salen de **`[BaseDeploy]::Settings`**, una propiedad estática con
+la config ya resuelta. La clase no puede leerla sola porque corre dentro
+de un job sin el módulo importado: la carga `Invoke-ThrottledDeployment`
+(ver 3.3). Si falta, el constructor falla con un mensaje claro. Ojo al
+editar la clase: un método no puede tener una variable local que se llame
+igual que una propiedad (`$settings` vs `Settings`) — PowerShell lo
+rechaza al parsear; por eso las locales se llaman `$cfg`.
 
 **`KbWindows`** (`Classes/KbWindows.ps1`) **extiende** `BaseDeploy`
 (`class KbWindows : BaseDeploy`) y agrega el flujo específico de
@@ -172,7 +183,10 @@ Qué hace, paso a paso:
    - `-InitializationScript`: un scriptblock armado en caliente que
      dot-sourcea cada ruta de `-ClassPaths` — así el job, que corre en
      un proceso completamente aparte, tiene las clases disponibles sin
-     depender del módulo importado en la sesión principal.
+     depender del módulo importado en la sesión principal. Si hay clases,
+     además deja la config (`-Settings`, o `Get-DeploymentConfig` si no
+     vino) en `[BaseDeploy]::Settings`, serializada como JSON dentro del
+     propio script.
    - `-ScriptBlock`: el `-Action` que le pasó la función pública (ver
      3.4).
    - `-ArgumentList`: `$Equipo, $LogPath, $LogMutexName` + los valores
@@ -232,10 +246,15 @@ $action = {
 
 Para agregar una octava tarea (ejemplo: "reiniciar el equipo"):
 
-1. Crear `Public/Invoke-RebootEquipo.ps1` siguiendo ese patrón —
-   parámetros propios + `$Action` con el `try/catch` de arriba.
-2. Resolver config con `Get-DeploymentConfig` para throttle/log path
-   por defecto (no hardcodear).
+1. Agregar su identidad a `Tasks` en `Deployment.Constants.psd1`
+   (`LogFile`, `MutexName` y `ImportFile` propios; si necesita throttle o
+   timeout distintos de los generales, una entrada en
+   `Tunable.TaskDefaults`).
+2. Crear `Public/Invoke-RebootEquipo.ps1` siguiendo ese patrón —
+   parámetros propios + `$Action` con el `try/catch` de arriba — y
+   resolver los defaults desde `$config.Tasks.<id>` (ThrottleLimit,
+   ElapsedTime, LogFile, MutexName), como las otras 7. Ningún valor
+   escrito a mano: hay una prueba que lo verifica (ver 3.6).
 3. Armar `$actionArgs` (`[ordered]@{...}`) en el mismo orden que los
    parámetros del `$Action` (después de `$Equipo, $LogPath, $LogMutexName`).
 4. Llamar a `Invoke-ThrottledDeployment` y devolver
@@ -254,15 +273,20 @@ Para agregar una octava tarea (ejemplo: "reiniciar el equipo"):
   (`<root>\Module\Deployment\Private\`) para encontrar `<root>`. Es la
   base de la portabilidad: mover/renombrar la carpeta del proyecto
   entero no rompe nada, porque nada usa una ruta absoluta hardcodeada.
-- **`Get-DeploymentConfig`** — lee `config\config.psd1` (si existe) y
-  completa los valores que falten. Distingue dos clases de valor: los
-  **estructurales** (throttle, códigos de éxito, rutas de `imports\` y
-  `logs\`) tienen default y funcionan sin tocar nada; los **del entorno**
-  (repositorio, carpeta de updates, ruta del agente de Nessus, UUID del
-  scan) quedan **vacíos a propósito** — no hay ni un dato de infraestructura
-  escrito en el código. Si falta uno, la tarea que lo necesita falla con un
-  mensaje que dice qué completar y dónde, en vez de apuntar en silencio a
-  un servidor que no es.
+- **`Get-DeploymentConfig`** — combina `Deployment.Constants.psd1` con
+  `config\config.psd1` (ver 3.6) y devuelve un solo objeto: los valores
+  ajustables ya resueltos, `.Tasks.<id>` con la identidad y los defaults
+  de cada tarea, y las secciones fijas (`.Log`, `.Remote`, `.Validation`,
+  `.Office`, `.Simulation`, `.Runner`, `.Ui`, `.Paths`). Los valores **del
+  entorno** (repositorio, carpeta de updates, ruta del agente de Nessus,
+  UUID del scan) quedan **vacíos a propósito** — no hay ni un dato de
+  infraestructura escrito en el código. Si falta uno, la tarea que lo
+  necesita falla con un mensaje que dice qué completar y dónde, en vez de
+  apuntar en silencio a un servidor que no es.
+- **`Get-DeploymentConstants`** — lee `Deployment.Constants.psd1` tal
+  cual, sin `config.psd1`. Es el único lugar que conoce el nombre de ese
+  archivo; lo usan `Get-DeploymentConfig` y lo interno que solo necesita
+  un valor fijo (el formato de fecha en `Write-DeploymentSummary`).
 - **`Read-ComputerList`** — lee un `.txt` de hostnames, recorta
   espacios, descarta líneas vacías/comentarios (`#`), y quita
   duplicados. Si el archivo queda vacío, avisa (no truena) — el
@@ -273,6 +297,49 @@ Para agregar una octava tarea (ejemplo: "reiniciar el equipo"):
   dado, y devuelve un `[pscustomobject]` con `Total/Ok/Failed/Errors`
   — es lo que cada función pública devuelve al final, y lo que
   `scripts\run_*.ps1` usa para decidir su `exit 0`/`exit 1`.
+
+### 3.6 Constantes y config: `Deployment.Constants.psd1`
+
+Todo valor con significado propio (nombre de log o de mutex de una tarea,
+archivo de `imports\` por defecto, timeouts, throttle, success codes,
+formato de fecha del log, patrón de `-KbFolder`, ruta de `psexec.exe` y de
+`OfficeC2RClient.exe`, clave de registro de Office, puerto e intervalos de
+las interfaces) está definido **una sola vez**, en
+`Module/Deployment/Deployment.Constants.psd1`. El módulo, el menú,
+`scripts\`, la GUI y la web lo leen de `Get-DeploymentConfig`; nadie lo
+escribe a mano.
+
+El archivo tiene dos clases de valor:
+
+- **`Tunable`** — defaults que `config\config.psd1` puede sobrescribir:
+  datos del entorno, `DefaultThrottleLimit`, `DefaultSuccessCodes`,
+  `DefaultElapsedTime`, `TaskDefaults` (throttle y timeout por tarea),
+  rutas de herramientas y tiempos internos de `BaseDeploy`.
+- **El resto** — fijo. Si `config.psd1` trae una clave que no está en
+  `Tunable` (o un campo de `TaskDefaults` que no sea `ThrottleLimit` o
+  `ElapsedTime`), se ignora con un aviso. Por ejemplo, cambiar el mutex de
+  una tarea mientras otra corrida de esa tarea sigue abierta haría que las
+  dos escriban al mismo log sin sincronizarse.
+
+Los timeouts de la config están en **segundos**; el menú, la GUI, la web
+y los `scripts\` los muestran y piden en minutos.
+
+Lo que **sí** queda escrito en el código, a propósito: la ruta
+`Module\Deployment\Deployment.psd1` en cada punto de entrada (hace falta
+para importar el módulo, antes de poder leer ninguna constante), la
+sintaxis de los comandos (flags de `psexec`, el comando de `Get-HotFix`,
+el de `OfficeC2RClient`), los textos para el usuario, y los formatos de
+presentación (anchos de columna, cuántas líneas de preview).
+
+Dos pruebas lo cuidan: una verifica que ningún valor de texto de las
+constantes aparezca como literal en un `.ps1` (mira los tokens de string,
+no los comentarios), y otra que el catálogo muestre los mismos defaults
+por tarea que usa el módulo.
+
+**Por qué `-KbFolder` y `-MaxTareas` no usan `[ValidatePattern()]` /
+`[ValidateRange()]`**: un atributo solo acepta literales, y el patrón y el
+rango viven en las constantes. Se validan al principio del cuerpo, antes
+de lanzar ningún job.
 
 ## 4. Flujo completo de punta a punta (ejemplo: KB mensual)
 
@@ -309,24 +376,24 @@ scripts\run_kb_deployment.ps1  (o la opción 5 del Deploy-Menu.ps1)
 ```
 
 Cada `InvokePsExec` de arriba escribe además al log compartido vía
-`WriteLogSafe` (protegido por el `Mutex` `Global\kb_deploy`), así que el
-archivo `logs\kb_deploy.log` termina con las líneas de **todos** los
+`WriteLogSafe` (protegido por el `MutexName` de la tarea `kb`), así que el
+archivo de log de la tarea termina con las líneas de **todos** los
 equipos intercaladas, en el orden en que realmente ocurrieron.
 
 ## 5. Configuración y datos
 
 - **`config\config.psd1`** (no versionado; copiar desde
   `config.example.psd1`) — ruta del repositorio, ruta de updates,
-  throttle limit por defecto, códigos de éxito, ruta/UUID de Nessus. Si
-  no existe, el toolkit sigue funcionando con los defaults de
-  `Get-DeploymentConfig.ps1`.
+  ruta/UUID de Nessus, y opcionalmente cualquier otro valor de la sección
+  `Tunable` de `Deployment.Constants.psd1` (ver 3.6). Si no existe, el
+  toolkit sigue funcionando con los defaults de las constantes.
 - **`imports\*.txt`** — listas de hostnames, una por archivo/tarea. Se
   copiaron tal cual del proyecto original; algunos nombres tienen
   typos evidentes de fábrica (ver `CHANGES.md`, punto 4) que no se
   "corrigieron" a ciegas.
-- **`logs\*.log`** — un archivo por tarea (`copy_files.log`,
-  `kb_deploy.log`, etc.), se crean solos. Formato de línea:
-  `yyyy-MM-dd HH:mm:ss | <equipo> | <mensaje>`.
+- **`logs\*.log`** — un archivo por tarea (el `LogFile` de cada una en
+  las constantes), se crean solos. Formato de línea:
+  `<fecha en Log.DateFormat> | <equipo> | <mensaje>`.
 
 ## 6. Pruebas: `tests\Test-DeploymentToolkit.ps1`
 
@@ -495,10 +562,17 @@ doble-click y ya pasa el flag.
   rechaza el *binding* antes de que el código llegue a correr.
 - **Siempre** `return ,@(...)` (coma unaria) en vez de `return @(...)`
   cuando la función puede devolver una colección vacía y quien la llama
-  necesita distinguir "vacío" de "`$null`".
+  necesita distinguir "vacío" de "`$null`". Excepción:
+  `Read-ComputerList` devuelve `@(...)` a secas, así que quien la llama
+  **siempre** la envuelve: `$x = @(Read-ComputerList ...)` (hay una prueba).
+  Ver `CHANGES.md` sección 11.
 - Un método nuevo que agregue una clase que herede de otra debe
   cargarse siempre después de su base en cualquier `-ClassPaths`.
-- El `Mutex` de `WriteLogSafe` da hasta 5s y después descarta la línea
+- **Ningún valor con significado escrito a mano.** Si hace falta uno
+  nuevo, va en `Deployment.Constants.psd1` (en `Tunable` si el operador
+  debería poder cambiarlo) y se lee de `Get-DeploymentConfig`. La prueba
+  de literales falla si un valor de las constantes se copia en un `.ps1`.
+- El `Mutex` de `WriteLogSafe` da hasta `LogMutexWaitMs` y después descarta la línea
   en silencio — no es un log 100% garantizado bajo contención extrema;
   ver la conversación sobre "logs que se traban" para el detalle de
   cuándo esto puede notarse y qué endurecerlo si hace falta.

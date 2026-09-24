@@ -53,6 +53,12 @@ function Read-YesNo($prompt, $default = $true) {
     return $raw.Trim().ToLower() -in @('s', 'si', 'sí', 'y', 'yes')
 }
 
+# El timeout de cada tarea esta en SEGUNDOS en la config; el menu lo pide
+# en minutos.
+function Get-TaskMinutes($task) {
+    return [math]::Floor($task.ElapsedTime / 60)
+}
+
 function Read-ValueOrDefault($prompt, $default) {
     $raw = Read-Host "$prompt (default: $default)"
     if ([string]::IsNullOrWhiteSpace($raw)) { return $default }
@@ -118,13 +124,14 @@ function Show-Preview($computerList) {
 function Invoke-MenuDeployApp {
     Write-Title "Desplegar aplicación"
     $config = Get-DeploymentConfig
+    $task = $config.Tasks.deployapp
     $computers = Get-ComputerListInteractive -ImportsPath $config.ImportsPath
     if ($computers.Count -eq 0) { Write-Host "Lista vacía, cancelado." -ForegroundColor Yellow; return }
     Show-Preview $computers
 
     $itemName = Read-Host "Nombre del ítem (solo para el log, ej. 'GoogleChrome')"
     $command = Read-Host "Comando completo a ejecutar (ej. `"\\...\Deploy-Application.exe`")"
-    $throttle = [int](Read-ValueOrDefault "Throttle limit" $config.DefaultThrottleLimit)
+    $throttle = [int](Read-ValueOrDefault "Throttle limit" $task.ThrottleLimit)
     $updateTenable = Read-YesNo "¿Actualizar Tenable después del deploy?" $false
 
     if (-not (Read-YesNo "¿Confirmar ejecución en $($computers.Count) equipos?")) { return }
@@ -136,15 +143,16 @@ function Invoke-MenuDeployApp {
 function Invoke-MenuCopyFiles {
     Write-Title "Copiar archivos"
     $config = Get-DeploymentConfig
+    $task = $config.Tasks.copyfiles
     $computers = Get-ComputerListInteractive -ImportsPath $config.ImportsPath
     if ($computers.Count -eq 0) { Write-Host "Lista vacía, cancelado." -ForegroundColor Yellow; return }
     Show-Preview $computers
 
     $source = Read-Host "Carpeta origen (ruta UNC del repositorio)"
     $itemName = Read-Host "Nombre del archivo/carpeta a copiar"
-    $remoteSub = Read-ValueOrDefault "Ruta relativa destino (bajo C$ del equipo remoto)" "temp\RemoteInstall"
+    $remoteSub = Read-ValueOrDefault "Ruta relativa destino (bajo C$ del equipo remoto)" $task.RemoteSubPath
     $recurse = Read-YesNo "¿Copiar recursivamente (carpeta completa)?" $false
-    $throttle = [int](Read-ValueOrDefault "Throttle limit" $config.DefaultThrottleLimit)
+    $throttle = [int](Read-ValueOrDefault "Throttle limit" $task.ThrottleLimit)
 
     if (-not (Read-YesNo "¿Confirmar ejecución en $($computers.Count) equipos?")) { return }
 
@@ -155,16 +163,17 @@ function Invoke-MenuCopyFiles {
 function Invoke-MenuCopyInstall {
     Write-Title "Copiar e instalar"
     $config = Get-DeploymentConfig
+    $task = $config.Tasks.copyinstall
     $computers = Get-ComputerListInteractive -ImportsPath $config.ImportsPath
     if ($computers.Count -eq 0) { Write-Host "Lista vacía, cancelado." -ForegroundColor Yellow; return }
     Show-Preview $computers
 
     $source = Read-Host "Carpeta origen del instalador"
     $itemName = Read-Host "Nombre del instalador/carpeta"
-    $remoteSub = Read-ValueOrDefault "Ruta relativa destino" "temp"
+    $remoteSub = Read-ValueOrDefault "Ruta relativa destino" $task.RemoteSubPath
     $installCommand = Read-Host "Comando de instalación a ejecutar tras copiar"
-    $minutes = [int](Read-ValueOrDefault "Timeout en minutos (0 = sin timeout)" 0)
-    $throttle = [int](Read-ValueOrDefault "Throttle limit" 1)
+    $minutes = [int](Read-ValueOrDefault "Timeout en minutos (0 = sin timeout)" (Get-TaskMinutes $task))
+    $throttle = [int](Read-ValueOrDefault "Throttle limit" $task.ThrottleLimit)
 
     if (-not (Read-YesNo "¿Confirmar ejecución en $($computers.Count) equipos?")) { return }
 
@@ -176,13 +185,14 @@ function Invoke-MenuCopyInstall {
 function Invoke-MenuRemoteCommand {
     Write-Title "Ejecutar comando remoto"
     $config = Get-DeploymentConfig
+    $task = $config.Tasks.remotecmd
     $computers = Get-ComputerListInteractive -ImportsPath $config.ImportsPath
     if ($computers.Count -eq 0) { Write-Host "Lista vacía, cancelado." -ForegroundColor Yellow; return }
     Show-Preview $computers
 
     $command = Read-Host "Comando a ejecutar en cada equipo"
-    $minutes = [int](Read-ValueOrDefault "Timeout en minutos (0 = sin timeout)" 0)
-    $throttle = [int](Read-ValueOrDefault "Throttle limit" $config.DefaultThrottleLimit)
+    $minutes = [int](Read-ValueOrDefault "Timeout en minutos (0 = sin timeout)" (Get-TaskMinutes $task))
+    $throttle = [int](Read-ValueOrDefault "Throttle limit" $task.ThrottleLimit)
     $updateTenable = Read-YesNo "¿Actualizar Tenable después de correr el comando?" $false
 
     if (-not (Read-YesNo "¿Confirmar ejecución en $($computers.Count) equipos?")) { return }
@@ -194,6 +204,7 @@ function Invoke-MenuRemoteCommand {
 function Invoke-MenuKbDeployment {
     Write-Title "Instalar KB de Windows"
     $config = Get-DeploymentConfig
+    $task = $config.Tasks.kb
     $computers = Get-ComputerListInteractive -ImportsPath $config.ImportsPath
     if ($computers.Count -eq 0) { Write-Host "Lista vacía, cancelado." -ForegroundColor Yellow; return }
     Show-Preview $computers
@@ -201,8 +212,8 @@ function Invoke-MenuKbDeployment {
     $kbPatchRaw = Read-Host "Número(s) de KB esperado(s), separados por coma (ej. KB5099414)"
     $kbPatch = @($kbPatchRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
     $kbFolder = Read-Host "Carpeta de instalación bajo Updates\ (formato YYYY-MM, ej. 2026-09)"
-    $minutes = [int](Read-ValueOrDefault "Timeout en minutos" 10)
-    $throttle = [int](Read-ValueOrDefault "Throttle limit" $config.DefaultThrottleLimit)
+    $minutes = [int](Read-ValueOrDefault "Timeout en minutos" (Get-TaskMinutes $task))
+    $throttle = [int](Read-ValueOrDefault "Throttle limit" $task.ThrottleLimit)
 
     if (-not (Read-YesNo "¿Confirmar instalación de $($kbPatch -join ', ') en $($computers.Count) equipos?")) { return }
 
@@ -213,13 +224,14 @@ function Invoke-MenuKbDeployment {
 function Invoke-MenuOfficeUpdate {
     Write-Title "Actualizar Office"
     $config = Get-DeploymentConfig
+    $task = $config.Tasks.office
     $computers = Get-ComputerListInteractive -ImportsPath $config.ImportsPath
     if ($computers.Count -eq 0) { Write-Host "Lista vacía, cancelado." -ForegroundColor Yellow; return }
     Show-Preview $computers
 
     $targetVersion = Read-Host "Versión mínima esperada de Office (ej. 16.0.19929.20220)"
-    $minutes = [int](Read-ValueOrDefault "Timeout en minutos (0 = sin timeout)" 0)
-    $throttle = [int](Read-ValueOrDefault "Throttle limit" $config.DefaultThrottleLimit)
+    $minutes = [int](Read-ValueOrDefault "Timeout en minutos (0 = sin timeout)" (Get-TaskMinutes $task))
+    $throttle = [int](Read-ValueOrDefault "Throttle limit" $task.ThrottleLimit)
     $updateTenable = Read-YesNo "¿Actualizar Tenable después?" $false
 
     if (-not (Read-YesNo "¿Confirmar ejecución en $($computers.Count) equipos?")) { return }
@@ -231,10 +243,11 @@ function Invoke-MenuOfficeUpdate {
 function Invoke-MenuNessusScan {
     Write-Title "Disparar scan de Nessus/Tenable"
     $config = Get-DeploymentConfig
+    $task = $config.Tasks.nessus
     $computers = Get-ComputerListInteractive -ImportsPath $config.ImportsPath
     if ($computers.Count -eq 0) { Write-Host "Lista vacía, cancelado." -ForegroundColor Yellow; return }
     Show-Preview $computers
-    $throttle = [int](Read-ValueOrDefault "Throttle limit" $config.DefaultThrottleLimit)
+    $throttle = [int](Read-ValueOrDefault "Throttle limit" $task.ThrottleLimit)
 
     if (-not (Read-YesNo "¿Confirmar ejecución en $($computers.Count) equipos?")) { return }
 

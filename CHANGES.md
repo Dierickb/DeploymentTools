@@ -497,3 +497,75 @@ consola separada por tarea, detener una sin tocar la otra, recarga de la
 página y vista en celular. La lógica de la GUI se probó con los tipos de WPF
 reemplazados por stubs (38 chequeos OK). La ventana WPF real hay que verla
 en Windows.
+
+## 10. Sin magic strings: `Deployment.Constants.psd1`
+
+Los valores con significado propio estaban escritos a mano y repetidos
+entre archivos: el nombre de log y de mutex de cada tarea (módulo +
+catálogo), la ruta `temp\RemoteInstall` (clase, módulo, catálogo, menú,
+script), el formato de fecha del log (6 lugares), los timeouts por tarea
+(hasta 4 lugares), el patrón de `-KbFolder` (3), los success codes (3),
+además de números sueltos en `BaseDeploy` (ping, mutex, reintentos de
+copia, 420 s de Tenable) y en las interfaces (puerto, intervalos, máximo de
+tareas). Ahora cada uno está definido una sola vez en
+`Module/Deployment/Deployment.Constants.psd1` y todos lo leen de
+`Get-DeploymentConfig`. Ver `ARQUITECTURA.md` 3.6.
+
+- **`config.psd1` solo sobrescribe lo ajustable** (sección `Tunable`:
+  datos del entorno, timeouts, throttle, success codes, rutas de
+  herramientas, y `TaskDefaults` por tarea). Una clave fija se ignora con
+  un aviso. Antes aceptaba cualquier clave.
+- **Inconsistencia corregida**: el timeout por defecto de "Copiar e
+  instalar" era 15 min en la GUI y la web, pero 0 (sin límite) en el menú,
+  `scripts\run_copy_install.ps1` y el módulo. Ahora es **15 min en todos
+  lados** (`TaskDefaults.copyinstall.ElapsedTime = 900`).
+- **Clases**: leen sus valores de `[BaseDeploy]::Settings`, que
+  `Invoke-ThrottledDeployment` carga en cada job. Se quitó el default
+  `"temp\RemoteInstall"` del parámetro de `CopyRemote`: era código muerto
+  (los métodos de clase ignoran los defaults) y todos los llamadores ya
+  pasan el valor.
+- **`scripts\`**: `-ElapsedTimeMinutes`, `-RemoteSubPath` y `-ThrottleLimit`
+  ya no tienen default propio; sin pasarlos, se usa el de la tarea.
+- **`-KbFolder`, `-MaxTareas` y `-Port`** se validan/resuelven en el
+  cuerpo: un atributo `[ValidatePattern()]`/`[ValidateRange()]` solo acepta
+  literales. El máximo de `-MaxTareas` pasó a ser la cantidad de tareas del
+  catálogo (hoy 7, igual que antes).
+- **Pruebas nuevas** (5): identidad única por tarea en las constantes; qué
+  sobrescribe y qué no `config.psd1`; mismos defaults en catálogo y módulo;
+  `-KbFolder` inválido con mensaje claro; y ningún valor de texto de las
+  constantes escrito como literal en un `.ps1` (contra `main` esa prueba da
+  48 hallazgos).
+
+**Resultado: 66 OK / 0 fallidos** (PowerShell 7 en macOS). Además: un job
+real (`Invoke-NessusScan` contra `127.0.0.1`) confirmó que la config llega
+a las clases dentro del `Start-Job`, y la web en `-Simular` se probó por su
+API (catálogo, `/api/init`, una corrida de "Copiar e instalar").
+
+## 11. `scripts\run_*.ps1` con un archivo de equipos vacío
+
+**Bug que ya estaba antes de la sección 10.** Con un archivo de `imports\`
+vacío (o solo con comentarios), los 7 wrappers de `scripts\` fallaban con
+*"Cannot bind argument to parameter 'ComputerList' because it is null"*,
+en vez del aviso-y-sigue que describe el README.
+
+Causa: la misma trampa de la sección 5.2. `Read-ComputerList` termina con
+`return @($clean)`, y un array vacío puesto en la salida se desenrolla a
+nada, así que `$computers = Read-ComputerList ...` quedaba en `$null`. La
+GUI y la web no tenían el problema porque ya llamaban con
+`@(Read-ComputerList ...)`, y el menú corta antes por `.Count -eq 0`. La
+prueba de la sección 5.1 no lo veía porque le pasa `@()` directo a
+`Invoke-CopyFiles`, sin pasar por `Read-ComputerList`.
+
+- **Arreglo**: los 7 wrappers ahora asignan
+  `$computers = @(Read-ComputerList -Path $computersPath)`, igual que la GUI
+  y la web. `Read-ComputerList` no se tocó: devolver con coma unaria
+  (`return ,@(...)`) habría roto a esos otros llamadores, que con `@(...)`
+  recibirían un array de un solo elemento con la lista entera adentro.
+- **Pruebas nuevas** (2): lista vacía de `Read-ComputerList` pasada a una
+  tarea real; y una que recorre los puntos de entrada y falla si alguno
+  asigna `Read-ComputerList` sin `@()` (contra `main` marca los 7 scripts).
+
+**Resultado: 68 OK / 0 fallidos.** Además, `run_copy_install`,
+`run_copy_files`, `run_kb_deployment` y `run_nessus_scan` se corrieron de
+verdad con un archivo vacío (sobre una copia del proyecto, para no escribir
+en `logs\`): salen con código 0 y dejan el resumen con 0 equipos.
