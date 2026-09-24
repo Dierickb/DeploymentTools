@@ -310,6 +310,52 @@ Test-Case "El resumen dice QUE equipos salieron OK y cuales fallaron (detalle de
     Remove-Item $tmpLog -ErrorAction SilentlyContinue
 }
 
+Test-Case "Dos tareas a la vez en runspaces separados no se mezclan (base de la multitarea)" {
+    # Es exactamente lo que hacen las interfaces con -MaxTareas: cada tarea
+    # en su propio runspace, con su cola, su log y su resumen. Si el modulo
+    # compartiera algo entre corridas, aca se verian equipos cruzados.
+    $manifest = Join-Path $moduleDir 'Deployment.psd1'
+    $corridas = @(
+        @{ Hosts = @('ta-01', 'ta-02', 'ta-fail-03'); Log = (Join-Path $tmpDir "test_multiA_$(Get-Random).log") },
+        @{ Hosts = @('tb-01', 'tb-02');               Log = (Join-Path $tmpDir "test_multiB_$(Get-Random).log") }
+    )
+    $worker = {
+        param($Manifest, $Hosts, $Log, $Queue)
+        Import-Module $Manifest -Force
+        Invoke-SimulatedDeployment -ComputerList $Hosts -DelayMs 50 -ThrottleLimit 3 -LogPath $Log `
+            -LogMutexName "Global\test_multi_$(Get-Random)" -ProgressQueue $Queue
+    }
+    foreach ($c in $corridas) {
+        $c.Queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+        $c.Ps = [powershell]::Create()
+        [void]$c.Ps.AddScript($worker).AddArgument($manifest).AddArgument($c.Hosts).AddArgument($c.Log).AddArgument($c.Queue)
+        $c.Handle = $c.Ps.BeginInvoke()      # las dos arrancan antes de esperar a ninguna
+    }
+    foreach ($c in $corridas) {
+        $c.Summary = @($c.Ps.EndInvoke($c.Handle)) | Select-Object -Last 1
+        $c.Ps.Dispose()
+    }
+
+    $a = $corridas[0]; $b = $corridas[1]
+    Assert-Equal 'ta-01,ta-02' ((@($a.Summary.Succeeded | ForEach-Object { $_.Equipo } | Sort-Object)) -join ',') "OK de la corrida A"
+    Assert-Equal 'ta-fail-03' (@($a.Summary.Errors)[0].Equipo) "fallido de la corrida A"
+    Assert-Equal 'tb-01,tb-02' ((@($b.Summary.Succeeded | ForEach-Object { $_.Equipo } | Sort-Object)) -join ',') "OK de la corrida B"
+    Assert-Equal 0 @($b.Summary.Errors).Count "la corrida B no tiene fallidos"
+
+    $logA = Get-Content $a.Log -Raw
+    $logB = Get-Content $b.Log -Raw
+    Assert-True (($logA -match 'ta-01') -and ($logA -notmatch 'tb-')) "el log de A solo tiene equipos de A"
+    Assert-True (($logB -match 'tb-01') -and ($logB -notmatch 'ta-')) "el log de B solo tiene equipos de B"
+
+    $item = $null; $dA = @(); while ($a.Queue.TryDequeue([ref]$item)) { if ($item.Type -eq 'JobDone') { $dA += $item.Equipo } }
+    $item = $null; $dB = @(); while ($b.Queue.TryDequeue([ref]$item)) { if ($item.Type -eq 'JobDone') { $dB += $item.Equipo } }
+    Assert-Equal 3 $dA.Count "la cola de A reporto sus 3 equipos"
+    Assert-Equal 2 $dB.Count "la cola de B reporto sus 2 equipos"
+    Assert-True (-not (@($dA) | Where-Object { $_ -like 'tb-*' })) "la cola de A no trae equipos de B"
+
+    Remove-Item $a.Log, $b.Log -ErrorAction SilentlyContinue
+}
+
 Test-Case "Invoke-ThrottledDeployment con lista vacia no explota" {
     $tmpLog = Join-Path $tmpDir "test_empty2_$(Get-Random).log"
     $results = Invoke-ThrottledDeployment -ComputerList @() -Action { param($e,$l,$m) } `

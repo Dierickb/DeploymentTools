@@ -459,3 +459,41 @@ reintento. Mismo comportamiento en `Deploy-Web.ps1` y `Deploy-Gui.ps1`.
 aparte, con los tipos de WPF reemplazados por stubs (WPF no existe fuera de
 Windows): 25 chequeos OK. El render real de la ventana hay que verlo en
 Windows.
+
+## 9. Varias tareas a la vez (web y GUI)
+
+Antes las dos interfaces corrían una sola tarea por vez: la web contestaba
+"Ya hay un despliegue en curso" y la GUI bloqueaba el menú mientras algo
+corría. Era un límite de las interfaces, no del módulo. Ahora se pueden
+correr varias tareas **distintas** en paralelo (por ejemplo, desplegar una
+aplicación mientras se copian archivos), hasta `-MaxTareas` (2 por
+defecto, hasta 7) en `Deploy-Web.ps1` y en `Deploy-Gui.ps1`.
+
+- **Fichas de ejecuciones** en "Progreso y consola en vivo": una por tarea,
+  con su avance y sus OK/Fallidos. Click en una ficha y la barra, la
+  consola y el detalle OK/Fallidos pasan a mostrar esa tarea.
+- **"Detener" se movió** de la tarjeta de ejecución a "Progreso y consola
+  en vivo", y frena solo la tarea que se está viendo. "Ejecutar" sigue
+  actuando sobre la tarea elegida en el menú.
+- **Bloqueos**: la misma tarea no corre dos veces a la vez (compartiría el
+  log) y no se pasa del máximo. "Ejecutar" se deshabilita y se muestra el
+  motivo.
+- **El módulo no se tocó.** Cada tarea ya escribía en su propio log con su
+  propio mutex.
+- **Web**: `/api/progress` devuelve todas las corridas en un pedido;
+  `/api/resultados` y `/api/stop` reciben `tarea=<id>`; `/api/init` informa
+  `maxTareas`. Si se recarga la página, las fichas se recuperan (la consola
+  de lo ya leído no).
+- **GUI**: el estado que era único (`$script:Sync`, `$script:PsWorker`,
+  `$script:LogOffset`, contadores...) pasó a un objeto por corrida
+  (`New-RunState`), y un solo timer atiende a todas. El relanzamiento en
+  STA pasa `-MaxTareas`.
+- **Prueba nueva**: dos despliegues simulados en runspaces separados, al
+  mismo tiempo, sin cruzar equipos, líneas de log ni eventos de progreso.
+
+**Resultado: 60 OK / 0 fallidos.** La web se probó en `-Simular` de punta a
+punta: dos tareas en paralelo, rechazo de la misma tarea y de una tercera,
+consola separada por tarea, detener una sin tocar la otra, recarga de la
+página y vista en celular. La lógica de la GUI se probó con los tipos de WPF
+reemplazados por stubs (38 chequeos OK). La ventana WPF real hay que verla
+en Windows.

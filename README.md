@@ -28,9 +28,11 @@ Levanta un servidor local y abre el navegador. Mismas 7 tareas, mismo
 módulo, mismo progreso en vivo. Escucha solo en `127.0.0.1` y exige un
 token aleatorio que cambia en cada arranque, así ninguna otra pestaña del
 navegador puede dispararle un despliegue. Opciones: `-Port 8899` si el
-puerto está ocupado, `-NoBrowser` para no abrirlo solo, y `-Simular` para
-recorrer toda la interfaz **sin tocar ningún equipo** (la forma de probarla
-en una Mac, donde `psexec.exe` no existe).
+puerto está ocupado, `-NoBrowser` para no abrirlo solo, `-MaxTareas 3`
+para permitir más tareas a la vez (por defecto 2, ver "Varias tareas a la
+vez" más abajo), y `-Simular` para recorrer toda la interfaz **sin tocar
+ningún equipo** (la forma de probarla en una Mac, donde `psexec.exe` no
+existe).
 
 ## Uso — interfaz gráfica WPF (solo Windows)
 
@@ -40,14 +42,30 @@ cmd_execute\Deploy-Gui.cmd
 o directamente:
 ```powershell
 powershell.exe -STA -File .\Deploy-Gui.ps1
+powershell.exe -STA -File .\Deploy-Gui.ps1 -MaxTareas 3   # mas tareas a la vez
 ```
 
 Ventana con las mismas 7 tareas: elegís la tarea a la izquierda, de
 dónde sale la lista de equipos, completás los parámetros, y "Ejecutar".
+Valida los parámetros antes de arrancar (campos obligatorios, formato
+`YYYY-MM` de la carpeta de KB, etc.) en vez de fallar a mitad de camino.
 Mientras corre, la consola de abajo muestra el log **en vivo** línea por
 línea, con la barra de progreso y los contadores OK/fallidos
-actualizándose equipo por equipo — la ventana no se congela y el botón
-"Detener" cancela el lote en curso.
+actualizándose equipo por equipo — la ventana no se congela, y el botón
+"Detener" (en "Progreso y consola en vivo") cancela la tarea que estás
+viendo.
+
+**Varias tareas a la vez** (igual en la interfaz web): mientras una tarea
+corre, podés elegir otra en el menú de la izquierda y ejecutarla — por
+ejemplo, desplegar una aplicación mientras se copian archivos. En
+"Progreso y consola en vivo" aparece una ficha por tarea con su avance y
+sus OK/Fallidos; hacé click en una ficha para ver su barra, su consola y
+su detalle. "Detener" frena solo la tarea que estás viendo. Por defecto
+se permiten **2 tareas a la vez** (`-MaxTareas` para cambiarlo, hasta 7).
+La misma tarea no puede correr dos veces a la vez, porque las dos
+escribirían en el mismo log. Ojo con la carga: la concurrencia real es la
+suma de los throttle (5 + 5 = 10 equipos atendidos al mismo tiempo desde
+tu máquina).
 
 **Detalle por equipo** (igual en la interfaz web): hacé click en el
 contador **OK** para ver la lista de hostnames que salieron bien, o en
@@ -55,9 +73,7 @@ contador **OK** para ver la lista de hostnames que salieron bien, o en
 en vivo mientras corre la tarea, y al terminar se actualiza con el error
 definitivo del resumen. "Copiar hostnames" copia solo los nombres, uno por
 línea — listo para pegar en un `.txt` de `imports\` y reintentar los
-fallidos. Otro click en el mismo contador (o "Cerrar") lo cierra. Valida los parámetros antes de
-arrancar (campos obligatorios, formato `YYYY-MM` de la carpeta de KB,
-etc.) en vez de fallar a mitad de camino.
+fallidos. Otro click en el mismo contador (o "Cerrar") lo cierra.
 
 El `-STA` no es opcional: WPF no arranca en apartment MTA. El `.cmd` ya
 lo pasa, y si se corre desde `pwsh` 7 el script se relanza solo. WPF es
@@ -194,7 +210,7 @@ Deployment/
 ## Pruebas
 
 `tests\Test-DeploymentToolkit.ps1` ya se corrió con PowerShell 7 real
-(no solo revisión manual): **59/59 pruebas OK**. Valida sintaxis de
+(no solo revisión manual): **60/60 pruebas OK**. Valida sintaxis de
 todos los `.ps1`, que el módulo importa, resolución de rutas, carga de
 config, limpieza de listas de equipos, un ping real a loopback, el
 logging, la comparación de KBs, el patrón de `-KbFolder`, el runner de

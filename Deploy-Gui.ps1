@@ -44,15 +44,34 @@
     completo los problemas de encoding de PowerShell 5.1, que lee un .ps1
     sin BOM como ANSI en vez de UTF-8.
 
+    MULTITAREA: se pueden correr varias tareas DISTINTAS a la vez (por
+    ejemplo, desplegar una aplicacion mientras se copian archivos), hasta
+    -MaxTareas. Cada corrida tiene su propio runspace, cola, flag de
+    cancelacion, lectura del log y contadores (ver seccion 8); el mismo
+    DispatcherTimer las atiende a todas. En "Progreso y consola en vivo"
+    aparece una ficha por tarea: click en una ficha y se ve su progreso, su
+    consola y su detalle OK/Fallidos; "Detener" frena solo esa. La misma
+    tarea no puede correr dos veces a la vez porque compartiria el log.
+
+.PARAMETER MaxTareas
+    Cuantas tareas distintas pueden correr a la vez. Por defecto 2. Ojo con
+    la carga: la concurrencia real es la suma de los throttle de cada tarea.
+
 .EXAMPLE
     .\Deploy-Gui.ps1
+
+.EXAMPLE
+    powershell.exe -STA -File .\Deploy-Gui.ps1 -MaxTareas 3
 
 .NOTES
     Requiere Windows con .NET/WPF y apartment STA. Si se arranca en MTA
     (por ejemplo pwsh 7 sin -STA), el script se relanza solo en STA.
 #>
 [CmdletBinding()]
-param()
+param(
+    [ValidateRange(1, 7)]
+    [int]$MaxTareas = 2
+)
 
 # ---------------------------------------------------------------------
 # 0. Requisitos de plataforma
@@ -97,7 +116,8 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
     Write-Host "Relanzando en modo STA (WPF lo requiere)..." -ForegroundColor Yellow
     $env:DEPLOYGUI_RELANZADO = '1'
     Start-Process -FilePath $hostExe -ArgumentList @(
-        '-STA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`""
+        '-STA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
+        '-MaxTareas', $MaxTareas
     )
     return
 }
@@ -319,6 +339,35 @@ $xamlText = @'
       </Setter>
     </Style>
 
+    <!-- Multitarea: una ficha por tarea ejecutada (en curso o la ultima que
+         termino). Click en una ficha = el progreso, la consola y el detalle
+         pasan a mostrar esa tarea. La ficha que se esta viendo se marca por
+         codigo (borde de color), ver Update-RunChips. -->
+    <Style x:Key="RunChip" TargetType="Button">
+      <Setter Property="Background" Value="#F5F6F8"/>
+      <Setter Property="BorderBrush" Value="#E2E4E9"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="10,6"/>
+      <Setter Property="Margin" Value="0,0,6,6"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7"
+                    Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="#ECEEF1"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <!-- Dos formas de acomodar el detalle: los OK son solo hostnames y van
          en grilla; los fallidos llevan el error al lado y van en lista. -->
     <ItemsPanelTemplate x:Key="PanelGrid"><WrapPanel Orientation="Horizontal"/></ItemsPanelTemplate>
@@ -418,12 +467,14 @@ $xamlText = @'
                            VerticalAlignment="Center" Margin="0,0,8,4"/>
                 <TextBox x:Name="ThrottleBox" Style="{StaticResource InputBox}" Width="54"
                          HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,0,18,4"/>
-                <Button x:Name="BtnRun" Content="Ejecutar" Style="{StaticResource PrimaryButton}" Margin="0,0,8,4"/>
-                <Button x:Name="BtnStop" Content="Detener" Style="{StaticResource GhostButton}"
-                        IsEnabled="False" Margin="0,0,14,4"/>
+                <Button x:Name="BtnRun" Content="Ejecutar" Style="{StaticResource PrimaryButton}" Margin="0,0,14,4"/>
                 <TextBlock x:Name="LogHint" VerticalAlignment="Center" FontSize="11" FontFamily="Consolas"
                            Foreground="#9AA1AD" TextTrimming="CharacterEllipsis" Margin="0,0,0,4"/>
               </WrapPanel>
+              <!-- Multitarea: por que no se puede ejecutar ahora (esta tarea ya
+                   corre, o se llego al maximo) o cuantas van en curso. -->
+              <TextBlock x:Name="CupoText" Margin="0,6,0,0" FontSize="12" Foreground="#6B7280"
+                         TextWrapping="Wrap" Visibility="Collapsed"/>
               <TextBlock x:Name="ValidationText" Margin="0,6,0,0" FontSize="12" Foreground="#5B2A86"
                          TextWrapping="Wrap" Visibility="Collapsed"/>
             </StackPanel>
@@ -431,7 +482,14 @@ $xamlText = @'
 
           <Border Style="{StaticResource CardStyle}">
             <StackPanel>
-              <TextBlock Text="PROGRESO Y CONSOLA EN VIVO" Style="{StaticResource CardTitle}"/>
+              <WrapPanel>
+                <TextBlock Text="PROGRESO Y CONSOLA EN VIVO" Style="{StaticResource CardTitle}"/>
+                <!-- Nombre de la tarea que se esta viendo -->
+                <TextBlock x:Name="ViewTaskText" FontSize="11" FontWeight="SemiBold"
+                           Foreground="{StaticResource BrushText}" Margin="8,0,0,10"/>
+              </WrapPanel>
+
+              <WrapPanel x:Name="RunsPanel" Visibility="Collapsed" Margin="0,0,0,6"/>
 
               <DockPanel Margin="0,0,0,10">
                 <TextBlock x:Name="ProgText" DockPanel.Dock="Left" MinWidth="104" FontSize="11.5"
@@ -475,6 +533,10 @@ $xamlText = @'
                     </StackPanel>
                   </StackPanel>
                 </Button>
+                <!-- Detiene SOLO la tarea que se esta viendo -->
+                <Button x:Name="BtnStop" Content="Detener" Style="{StaticResource GhostButton}"
+                        IsEnabled="False" Padding="12,6" VerticalAlignment="Center" Margin="0,0,8,6"
+                        ToolTip="Detiene solo la tarea que se esta viendo"/>
                 <Button x:Name="BtnOpenLog" Content="Abrir log completo" Style="{StaticResource GhostButton}"
                         Padding="12,6" VerticalAlignment="Center" Margin="0,0,8,6"/>
                 <Button x:Name="BtnClear" Content="Limpiar consola" Style="{StaticResource GhostButton}"
@@ -571,7 +633,8 @@ foreach ($name in @('Rail','HeaderTask','HeaderRoot','TaskTitle','TaskDesc','RbF
                     'ValidationText','ProgText','Prog','TotalText','OkText','FailText','BtnOpenLog','BtnClear',
                     'LogList','StatusText','LogHint',
                     'TileOk','TileFail','OkChevron','FailChevron','DetailPanel','DetailTitle','DetailCount',
-                    'DetailHeader','DetailEmpty','DetailList','BtnCopyDetail','BtnCloseDetail')) {
+                    'DetailHeader','DetailEmpty','DetailList','BtnCopyDetail','BtnCloseDetail',
+                    'CupoText','ViewTaskText','RunsPanel')) {
     Set-Variable -Name $name -Scope Script -Value $window.FindName($name)
 }
 
@@ -580,30 +643,35 @@ foreach ($name in @('Rail','HeaderTask','HeaderRoot','TaskTitle','TaskDesc','RbF
 # ---------------------------------------------------------------------
 $script:CurrentTask   = $null
 $script:FieldControls = @{}
-$script:Running       = $false
-$script:Sync          = $null
-$script:PsWorker      = $null
-$script:Handle        = $null
 $script:Timer         = $null
-$script:LogOffset     = 0
-$script:LogCarry      = ''
+# Log de la tarea elegida en el menu (para "Abrir log completo" cuando esa
+# tarea todavia no tiene corrida). Cada corrida lleva el suyo.
 $script:CurrentLog    = $null
-$script:Ok            = 0
-$script:Fail          = 0
-$script:DoneCount     = 0
-$script:TotalCount    = 0
-$script:FlushTicks    = 0
 
-# Detalle por equipo para los paneles de OK / Fallidos. Se llenan en vivo
-# con cada JobDone y, al terminar, se reemplazan por el resumen final del
-# modulo (que para un job caido trae el error real, no el generico "sin
-# resultado" que ve el peek en vivo). OJO: no usar @($script:FailList): en
-# PowerShell 7.4, @() sobre un List[object] con pscustomobject adentro
-# truena con "Argument types do not match". foreach o .ToArray().
+# MULTITAREA. Antes el estado de la ejecucion era unico ($script:Sync,
+# $script:PsWorker, $script:LogOffset, $script:Ok, ...). Ahora cada corrida
+# lleva el suyo en un objeto (ver New-RunState, seccion 8) y se guardan
+# aca, una por tarea: la que esta en curso o la ultima que termino. Una
+# corrida nueva de esa tarea reemplaza a la anterior.
+$script:MaxTareas = $MaxTareas
+$script:Runs      = [System.Collections.Specialized.OrderedDictionary]::new()
+$script:RunChips  = @{}          # TaskId -> controles de su ficha
+# Tarea cuya corrida se ve en "Progreso y consola". Es independiente de la
+# tarea elegida en el menu: se puede preparar la segunda tarea sin perder
+# de vista la primera.
+$script:ViewTask  = $null
+
+# Detalle por equipo para los paneles de OK / Fallidos. Apuntan SIEMPRE a
+# las listas de la corrida que se esta viendo (ver Show-Run); cada corrida
+# llena las suyas en vivo con cada JobDone y, al terminar, las reemplaza por
+# el resumen final del modulo (que para un job caido trae el error real, no
+# el generico "sin resultado" que ve el peek en vivo). OJO: no usar
+# @($script:FailList): en PowerShell 7.4, @() sobre un List[object] con
+# pscustomobject adentro truena con "Argument types do not match". foreach
+# o .ToArray().
 $script:OkList     = New-Object 'System.Collections.Generic.List[string]'
 $script:FailList   = New-Object 'System.Collections.Generic.List[object]'
 $script:DetailMode = $null      # $null | 'ok' | 'fail'
-$script:HasRun     = $false
 $script:CopyTimer  = $null
 
 $BrushMap = @{
@@ -659,34 +727,35 @@ function Get-LineKind {
     }
 }
 
-# Lee SOLO lo que se agrego al log desde la ultima vuelta. Se abre con
+# Lee SOLO lo que se agrego al log de UNA corrida desde la ultima vuelta. Se abre con
 # FileShare.ReadWrite porque los jobs lo estan escribiendo al mismo tiempo:
 # abrirlo en modo exclusivo desde aca haria fallar sus Add-Content.
 function Read-NewLogLines {
-    if (-not $script:CurrentLog -or -not (Test-Path $script:CurrentLog)) { return @() }
+    param($Run)
+    if (-not $Run -or -not $Run.LogPath -or -not (Test-Path $Run.LogPath)) { return @() }
 
     $lines = @()
     try {
         $fs = New-Object System.IO.FileStream(
-            $script:CurrentLog,
+            $Run.LogPath,
             [System.IO.FileMode]::Open,
             [System.IO.FileAccess]::Read,
             ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
         )
         try {
-            if ($fs.Length -lt $script:LogOffset) {
+            if ($fs.Length -lt $Run.LogOffset) {
                 # El log fue truncado o rotado: volver a empezar.
-                $script:LogOffset = 0
-                $script:LogCarry = ''
+                $Run.LogOffset = 0
+                $Run.LogCarry = ''
             }
-            [void]$fs.Seek($script:LogOffset, [System.IO.SeekOrigin]::Begin)
+            [void]$fs.Seek($Run.LogOffset, [System.IO.SeekOrigin]::Begin)
             $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
             $chunk = $sr.ReadToEnd()
-            $script:LogOffset = $fs.Position
+            $Run.LogOffset = $fs.Position
 
             if ($chunk) {
-                $chunk = $script:LogCarry + $chunk
-                $script:LogCarry = ''
+                $chunk = $Run.LogCarry + $chunk
+                $Run.LogCarry = ''
                 # Si el chunk no termina en salto de linea, la ultima linea
                 # viene cortada a la mitad (un job estaba escribiendo justo
                 # en ese momento): se guarda para completarla en la proxima
@@ -694,11 +763,11 @@ function Read-NewLogLines {
                 if (-not ($chunk.EndsWith("`n"))) {
                     $idx = $chunk.LastIndexOf("`n")
                     if ($idx -ge 0) {
-                        $script:LogCarry = $chunk.Substring($idx + 1)
+                        $Run.LogCarry = $chunk.Substring($idx + 1)
                         $chunk = $chunk.Substring(0, $idx + 1)
                     }
                     else {
-                        $script:LogCarry = $chunk
+                        $Run.LogCarry = $chunk
                         $chunk = ''
                     }
                 }
@@ -945,8 +1014,9 @@ function Test-Parameters {
 function Select-Task {
     param([string]$TaskId)
 
-    if ($script:Running) { return }
-
+    # MULTITAREA: ya no se bloquea mientras algo corre. Elegir otra tarea
+    # solo cambia el formulario; el progreso sigue mostrando la corrida que
+    # se estaba viendo (se cambia con las fichas).
     $task = $script:Tasks | Where-Object { $_.Id -eq $TaskId } | Select-Object -First 1
     if (-not $task) { return }
 
@@ -975,12 +1045,11 @@ function Select-Task {
     Update-ImportCombo
     Build-ParameterPanel -Task $task
     Update-ComputerPreview
-    # Tarea nueva: los contadores vuelven a 0, asi que el detalle tambien
-    # (y si quedo abierto, dice que todavia no se corrio nada).
-    $script:HasRun = $false
-    Reset-RunState
     $script:ValidationText.Visibility = 'Collapsed'
-    $script:StatusText.Text = "Listo. Funcion del modulo: $($task.Function)"
+    Update-Buttons
+    if (@(Get-ActiveRuns).Count -eq 0) {
+        $script:StatusText.Text = "Listo. Funcion del modulo: $($task.Function)"
+    }
 }
 
 function Build-Rail {
@@ -1002,24 +1071,225 @@ function Build-Rail {
 }
 
 # ---------------------------------------------------------------------
-# 8. Ejecucion
+# 8. Ejecucion (multitarea)
+#
+#    Cada tarea lanzada es una "corrida" con su propio estado (New-RunState):
+#    runspace, cola de progreso, flag de cancelacion, offset del log,
+#    contadores, listas OK/Fallidos y las lineas de SU consola. Se guardan
+#    en $script:Runs, una por tarea. Un solo DispatcherTimer las atiende a
+#    todas (Update-FromWorker). La pantalla muestra UNA a la vez, la de
+#    $script:ViewTask; las fichas permiten cambiar cual.
+#
+#    El modulo no necesita nada para esto: cada tarea escribe en su propio
+#    .log con su propio mutex, asi que dos tareas distintas no se pisan. Lo
+#    que SI se bloquea es la misma tarea dos veces a la vez: compartirian el
+#    log y las consolas se mezclarian.
 # ---------------------------------------------------------------------
+function Get-ViewRun {
+    if ($script:ViewTask -and $script:Runs.Contains($script:ViewTask)) { return $script:Runs[$script:ViewTask] }
+    return $null
+}
+
+function Get-ActiveRuns {
+    $activas = @()
+    foreach ($k in @($script:Runs.Keys)) {
+        if ($script:Runs[$k].Running) { $activas += $script:Runs[$k] }
+    }
+    return ,$activas
+}
+
+# Estado de una corrida, sin nada de WPF ni runspaces (asi se puede probar
+# fuera de Windows). Start-Deployment le agrega el worker.
+function New-RunState {
+    param($Task, [string[]]$Computers, [string]$LogPath)
+
+    $sync = [hashtable]::Synchronized(@{})
+    $sync.Queue   = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+    $sync.Cancel  = [hashtable]::Synchronized(@{ Cancel = $false })
+    $sync.Summary = $null
+    $sync.Error   = $null
+
+    # Arrancar a leer el log desde el final actual: solo interesan las
+    # lineas de ESTA corrida, no el historico del archivo.
+    $offset = 0
+    if ($LogPath -and (Test-Path $LogPath)) { $offset = (Get-Item $LogPath).Length }
+
+    return [pscustomobject]@{
+        TaskId     = $Task.Id
+        Label      = $Task.Label
+        Function   = $Task.Function
+        Sync       = $sync
+        PsWorker   = $null
+        Handle     = $null
+        LogPath    = $LogPath
+        LogOffset  = $offset
+        LogCarry   = ''
+        Total      = $Computers.Count
+        Ok         = 0
+        Fail       = 0
+        Done       = 0
+        OkList     = New-Object 'System.Collections.Generic.List[string]'
+        FailList   = New-Object 'System.Collections.Generic.List[object]'
+        # Lineas de la consola de esta corrida ({Text, Kind}); al cambiar de
+        # ficha se vuelve a pintar la consola con estas.
+        Lines      = New-Object 'System.Collections.Generic.List[object]'
+        Running    = $true
+        FlushTicks = 0
+        Cancelling = $false
+        Cancelled  = $false
+    }
+}
+
+# Linea para la consola de UNA corrida: se guarda siempre y solo se pinta si
+# es la que se esta viendo. Tope de 900 por corrida, igual que la consola.
+function Add-RunLine {
+    param($Run, [string]$Text, [string]$Kind = 'normal')
+    $Run.Lines.Add([pscustomobject]@{ Text = $Text; Kind = $Kind })
+    while ($Run.Lines.Count -gt 900) { $Run.Lines.RemoveAt(0) }
+    if ($Run.TaskId -eq $script:ViewTask) { Add-ConsoleLine $Text $Kind }
+}
+
+# Deja la vista de progreso en cero (sin corrida seleccionada).
 function Reset-RunState {
-    $script:Ok = 0; $script:Fail = 0; $script:DoneCount = 0; $script:TotalCount = 0
     $script:OkText.Text = '0'
     $script:FailText.Text = '0'
     $script:TotalText.Text = '0'
     $script:Prog.Value = 0
     $script:ProgText.Text = '0 / 0 equipos'
-    $script:OkList.Clear()
-    $script:FailList.Clear()
+    $script:ViewTaskText.Text = ''
+    $script:OkList = New-Object 'System.Collections.Generic.List[string]'
+    $script:FailList = New-Object 'System.Collections.Generic.List[object]'
+    if ($script:DetailMode) { Update-DetailPanel }
+}
+
+# Contadores y barra de la corrida que se esta viendo.
+function Update-ProgressView {
+    $run = Get-ViewRun
+    if (-not $run) { Reset-RunState; return }
+    $script:ViewTaskText.Text = "-  $($run.Label)"
+    $script:TotalText.Text = [string]$run.Total
+    $script:OkText.Text    = [string]$run.Ok
+    $script:FailText.Text  = [string]$run.Fail
+    $script:ProgText.Text  = "$($run.Done) / $($run.Total) equipos"
+    $script:Prog.Value = if ($run.Total -gt 0) { [math]::Round(($run.Done / $run.Total) * 100) } else { 0 }
+}
+
+# Una ficha por corrida. Los botones se crean una vez y despues se
+# actualizan en su lugar: si se regeneraran en cada tick, un click que cae
+# justo en el cambio se perderia.
+function Update-RunChips {
+    $conv = [System.Windows.Media.BrushConverter]::new()
+    foreach ($k in @($script:Runs.Keys)) {
+        $run = $script:Runs[$k]
+        $chip = $script:RunChips[$k]
+        if (-not $chip) {
+            $btn = New-Object System.Windows.Controls.Button
+            $btn.Style = $window.FindResource('RunChip')
+            $sp = New-Object System.Windows.Controls.StackPanel
+            $sp.Orientation = 'Horizontal'
+            $dot = New-Object System.Windows.Shapes.Ellipse
+            $dot.Width = 8; $dot.Height = 8
+            $dot.Margin = '0,0,8,0'
+            $dot.VerticalAlignment = 'Center'
+            $lbl = New-Object System.Windows.Controls.TextBlock
+            $lbl.FontWeight = 'SemiBold'
+            $lbl.FontSize = 12
+            $lbl.VerticalAlignment = 'Center'
+            $sts = New-Object System.Windows.Controls.TextBlock
+            $sts.FontFamily = 'Consolas'
+            $sts.FontSize = 11
+            $sts.Margin = '8,0,0,0'
+            $sts.VerticalAlignment = 'Center'
+            $sts.Foreground = $conv.ConvertFromString('#6B7280')
+            [void]$sp.Children.Add($dot); [void]$sp.Children.Add($lbl); [void]$sp.Children.Add($sts)
+            $btn.Content = $sp
+
+            # Mismo patron que Build-Rail: el id se fija en la closure.
+            $chipId = $k
+            $btn.Add_Click({ Show-Run -TaskId $chipId }.GetNewClosure())
+
+            [void]$script:RunsPanel.Children.Add($btn)
+            $chip = @{ Button = $btn; Dot = $dot; Label = $lbl; Stats = $sts }
+            $script:RunChips[$k] = $chip
+        }
+
+        $color = if ($run.Running) { if ($run.Cancelling) { '#9AA1AD' } else { '#A11530' } }
+                 elseif ($run.Cancelled) { '#9AA1AD' }
+                 elseif ($run.Fail -gt 0) { '#5B2A86' }
+                 else { '#2E7D32' }
+        $chip.Dot.Fill = $conv.ConvertFromString($color)
+        $chip.Label.Text = $run.Label
+        $chip.Stats.Text = "$($run.Done)/$($run.Total)  OK $($run.Ok)  Fallidos $($run.Fail)"
+        $chip.Button.ToolTip = if ($run.Running) { if ($run.Cancelling) { 'Cancelando...' } else { 'En curso' } }
+                               elseif ($run.Cancelled) { 'Cancelada' } else { 'Terminada' }
+
+        if ($k -eq $script:ViewTask) {
+            $chip.Button.Background      = [System.Windows.Media.Brushes]::White
+            $chip.Button.BorderBrush     = $conv.ConvertFromString('#A11530')
+            $chip.Button.BorderThickness = '2'
+            $chip.Button.Padding         = '9,5'      # compensa el borde de 2 px
+        }
+        else {
+            $chip.Button.Background      = $conv.ConvertFromString('#F5F6F8')
+            $chip.Button.BorderBrush     = $conv.ConvertFromString('#E2E4E9')
+            $chip.Button.BorderThickness = '1'
+            $chip.Button.Padding         = '10,6'
+        }
+    }
+    $script:RunsPanel.Visibility = if ($script:Runs.Count -gt 0) { 'Visible' } else { 'Collapsed' }
+}
+
+# Ejecutar actua sobre la tarea elegida en el menu; Detener, sobre la que
+# se esta viendo.
+function Update-Buttons {
+    $activas = Get-ActiveRuns
+    $motivo = ''
+    if ($script:CurrentTask -and @($activas | Where-Object { $_.TaskId -eq $script:CurrentTask.Id }).Count -gt 0) {
+        $motivo = "'$($script:CurrentTask.Label)' ya se esta ejecutando. Mira su ficha en Progreso."
+    }
+    elseif ($activas.Count -ge $script:MaxTareas) {
+        $motivo = "Ya hay $($activas.Count) tareas en curso (maximo $($script:MaxTareas)). Espera a que termine alguna."
+    }
+    $script:BtnRun.IsEnabled = (-not $motivo)
+
+    $texto = if ($motivo) { $motivo } elseif ($activas.Count -gt 0) { "En curso: $($activas.Count) de $($script:MaxTareas) tareas a la vez." } else { '' }
+    $script:CupoText.Text = $texto
+    $script:CupoText.Visibility = if ($texto) { 'Visible' } else { 'Collapsed' }
+
+    $v = Get-ViewRun
+    $script:BtnStop.IsEnabled = [bool]($v -and $v.Running -and -not $v.Cancelling)
+}
+
+# Cambia la corrida que se ve: consola, contadores, detalle y fichas.
+function Show-Run {
+    param([string]$TaskId)
+    if (-not $script:Runs.Contains($TaskId)) { return }
+    $run = $script:Runs[$TaskId]
+    $script:ViewTask = $TaskId
+
+    # El detalle OK/Fallidos trabaja sobre estas dos referencias.
+    $script:OkList   = $run.OkList
+    $script:FailList = $run.FailList
+
+    $script:LogList.Items.Clear()
+    foreach ($l in $run.Lines) { Add-ConsoleLine $l.Text $l.Kind }
+
+    Update-ProgressView
+    Update-RunChips
+    Update-Buttons
     if ($script:DetailMode) { Update-DetailPanel }
 }
 
 function Start-Deployment {
-    if ($script:Running) { return }
-
     $task = $script:CurrentTask
+    if (-not $task) { return }
+
+    # Multitarea: la misma tarea nunca dos veces a la vez, y como mucho
+    # -MaxTareas tareas distintas en paralelo.
+    $activas = Get-ActiveRuns
+    if (@($activas | Where-Object { $_.TaskId -eq $task.Id }).Count -gt 0) { Update-Buttons; return }
+    if ($activas.Count -ge $script:MaxTareas) { Update-Buttons; return }
+
     $computers = (Resolve-ComputerList).List
 
     $errors = Test-Parameters -Task $task -ComputerList $computers
@@ -1030,41 +1300,27 @@ function Start-Deployment {
     }
     $script:ValidationText.Visibility = 'Collapsed'
 
+    $pregunta = "Ejecutar '$($task.Label)' en $($computers.Count) equipos?"
+    if ($activas.Count -gt 0) {
+        $pregunta += "`n`nYa hay $($activas.Count) tarea(s) en curso; esta corre en paralelo."
+    }
     $answer = [System.Windows.MessageBox]::Show(
-        "Ejecutar '$($task.Label)' en $($computers.Count) equipos?",
+        $pregunta,
         'Confirmar ejecucion',
         [System.Windows.MessageBoxButton]::YesNo,
         [System.Windows.MessageBoxImage]::Question
     )
     if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
 
+    $logPath = Join-Path $script:Config.LogsPath $task.LogFile
     $splat = Read-ParameterValues -Task $task
     $splat['ComputerList']  = $computers
     $splat['ThrottleLimit'] = [int]$script:ThrottleBox.Text.Trim()
-    $splat['LogPath']       = $script:CurrentLog
+    $splat['LogPath']       = $logPath
 
-    Reset-RunState
-    $script:LogList.Items.Clear()
-    $script:TotalCount = $computers.Count
-    $script:TotalText.Text = [string]$computers.Count
-    $script:ProgText.Text = "0 / $($computers.Count) equipos"
-
-    # Arrancar a leer el log desde el final actual: solo interesan las
-    # lineas de ESTA corrida, no el historico del archivo.
-    $script:LogOffset = 0
-    $script:LogCarry = ''
-    if (Test-Path $script:CurrentLog) {
-        $script:LogOffset = (Get-Item $script:CurrentLog).Length
-    }
-
-    Add-ConsoleLine "=== $($task.Label) - $($computers.Count) equipos - throttle $($splat['ThrottleLimit']) ===" 'summary'
-    Add-ConsoleLine "Llamando a $($task.Function) del modulo Deployment" 'muted'
-
-    $script:Sync = [hashtable]::Synchronized(@{})
-    $script:Sync.Queue   = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
-    $script:Sync.Cancel  = [hashtable]::Synchronized(@{ Cancel = $false })
-    $script:Sync.Summary = $null
-    $script:Sync.Error   = $null
+    # Corrida nueva de esta tarea: reemplaza a la anterior (consola incluida).
+    $run = New-RunState -Task $task -Computers $computers -LogPath $logPath
+    $script:Runs[$task.Id] = $run
 
     $worker = {
         param($ModulePath, $FunctionName, $Splat, $Sync)
@@ -1088,156 +1344,170 @@ function Start-Deployment {
     $runspace.ThreadOptions  = 'ReuseThread'
     $runspace.Open()
 
-    $script:PsWorker = [powershell]::Create()
-    $script:PsWorker.Runspace = $runspace
-    [void]$script:PsWorker.AddScript($worker).
+    $run.PsWorker = [powershell]::Create()
+    $run.PsWorker.Runspace = $runspace
+    [void]$run.PsWorker.AddScript($worker).
         AddArgument($script:ModulePath).
         AddArgument($task.Function).
         AddArgument($splat).
-        AddArgument($script:Sync)
-    $script:Handle = $script:PsWorker.BeginInvoke()
+        AddArgument($run.Sync)
+    $run.Handle = $run.PsWorker.BeginInvoke()
 
-    $script:Running = $true
-    $script:HasRun = $true
-    if ($script:DetailMode) { Update-DetailPanel }   # el panel abierto arranca vacio y se llena en vivo
-    $script:FlushTicks = 0
-    $script:BtnRun.IsEnabled = $false
-    $script:BtnStop.IsEnabled = $true
-    $script:Rail.IsEnabled = $false
+    # Lo que se acaba de lanzar pasa a la vista.
+    Show-Run -TaskId $task.Id
+    Add-RunLine $run "=== $($task.Label) - $($computers.Count) equipos - throttle $($splat['ThrottleLimit']) ===" 'summary'
+    Add-RunLine $run "Llamando a $($task.Function) del modulo Deployment" 'muted'
     $script:StatusText.Text = "Ejecutando $($task.Function) en $($computers.Count) equipos..."
 
-    $script:Timer = New-Object System.Windows.Threading.DispatcherTimer
-    $script:Timer.Interval = [TimeSpan]::FromMilliseconds(250)
-    $script:Timer.Add_Tick({ Update-FromWorker })
+    # Un solo timer para todas las corridas.
+    if (-not $script:Timer) {
+        $script:Timer = New-Object System.Windows.Threading.DispatcherTimer
+        $script:Timer.Interval = [TimeSpan]::FromMilliseconds(250)
+        $script:Timer.Add_Tick({ Update-FromWorker })
+    }
     $script:Timer.Start()
 }
 
 function Update-FromWorker {
-    # (a) Drenar la cola de progreso que llena Invoke-ThrottledDeployment.
-    $workerDone = $false
-    $item = $null
-    while ($script:Sync.Queue.TryDequeue([ref]$item)) {
-        switch ($item.Type) {
-            'JobStart' {
-                $script:StatusText.Text = "Encolando: $($item.Equipo)  ($($item.Started)/$($item.Total))"
-            }
-            'JobDone' {
-                $script:DoneCount = $item.Done
-                if ($item.Success) {
-                    $script:Ok++
-                    $script:OkList.Add([string]$item.Equipo)
-                    if ($script:DetailMode -eq 'ok') {
-                        [void]$script:DetailList.Items.Add((New-DetailItem -Equipo $item.Equipo))
-                        Update-DetailCount
+    foreach ($run in (Get-ActiveRuns)) {
+        $esVista = ($run.TaskId -eq $script:ViewTask)
+
+        # (a) Drenar la cola de progreso que llena Invoke-ThrottledDeployment.
+        $workerDone = $false
+        $item = $null
+        while ($run.Sync.Queue.TryDequeue([ref]$item)) {
+            switch ($item.Type) {
+                'JobStart' {
+                    if ($esVista) {
+                        $script:StatusText.Text = "[$($run.Label)] Encolando: $($item.Equipo)  ($($item.Started)/$($item.Total))"
                     }
                 }
-                else {
-                    $script:Fail++
-                    $entry = [pscustomobject]@{ Equipo = [string]$item.Equipo; Message = [string]$item.Message }
-                    $script:FailList.Add($entry)
-                    if ($script:DetailMode -eq 'fail') {
-                        [void]$script:DetailList.Items.Add((New-DetailItem -Equipo $entry.Equipo -Mensaje $entry.Message -Fail))
-                        Update-DetailCount
+                'JobDone' {
+                    $run.Done = $item.Done
+                    if ($item.Success) {
+                        $run.Ok++
+                        $run.OkList.Add([string]$item.Equipo)
+                        if ($esVista -and $script:DetailMode -eq 'ok') {
+                            [void]$script:DetailList.Items.Add((New-DetailItem -Equipo $item.Equipo))
+                            Update-DetailCount
+                        }
+                    }
+                    else {
+                        $run.Fail++
+                        $entry = [pscustomobject]@{ Equipo = [string]$item.Equipo; Message = [string]$item.Message }
+                        $run.FailList.Add($entry)
+                        if ($esVista -and $script:DetailMode -eq 'fail') {
+                            [void]$script:DetailList.Items.Add((New-DetailItem -Equipo $entry.Equipo -Mensaje $entry.Message -Fail))
+                            Update-DetailCount
+                        }
                     }
                 }
-                $script:OkText.Text   = [string]$script:Ok
-                $script:FailText.Text = [string]$script:Fail
-                $script:ProgText.Text = "$($script:DoneCount) / $($script:TotalCount) equipos"
-                if ($script:TotalCount -gt 0) {
-                    $script:Prog.Value = [math]::Round(($script:DoneCount / $script:TotalCount) * 100)
+                'BatchEnd' {
+                    if ($item.Cancelled) {
+                        $run.Cancelled = $true
+                        Add-RunLine $run '*** Cancelado por el usuario ***' 'fail'
+                    }
                 }
+                'Error' {
+                    Add-RunLine $run "ERROR: $($item.Message)" 'fail'
+                }
+                'WorkerDone' { $workerDone = $true }
             }
-            'BatchEnd' {
-                if ($item.Cancelled) { Add-ConsoleLine '*** Cancelado por el usuario ***' 'fail' }
-            }
-            'Error' {
-                Add-ConsoleLine "ERROR: $($item.Message)" 'fail'
-            }
-            'WorkerDone' { $workerDone = $true }
+        }
+
+        # (b) Volcar las lineas nuevas del archivo de log de ESTA corrida.
+        foreach ($line in (Read-NewLogLines -Run $run)) {
+            Add-RunLine $run $line (Get-LineKind $line)
+        }
+
+        if ($workerDone) {
+            # Unas vueltas mas para alcanzar a leer lo ultimo que los jobs
+            # escribieron justo antes de terminar.
+            $run.FlushTicks = 4
+        }
+        if ($run.FlushTicks -gt 0) {
+            $run.FlushTicks--
+            if ($run.FlushTicks -eq 0) { Complete-Deployment -Run $run }
         }
     }
 
-    # (b) Volcar las lineas nuevas del archivo de log.
-    foreach ($line in (Read-NewLogLines)) {
-        Add-ConsoleLine $line (Get-LineKind $line)
-    }
+    Update-ProgressView
+    Update-RunChips
+    Update-Buttons
 
-    if ($workerDone) {
-        # Unas vueltas mas para alcanzar a leer lo ultimo que los jobs
-        # escribieron justo antes de terminar.
-        $script:FlushTicks = 4
-    }
-    if ($script:FlushTicks -gt 0) {
-        $script:FlushTicks--
-        if ($script:FlushTicks -eq 0) { Complete-Deployment }
-    }
+    if ((Get-ActiveRuns).Count -eq 0 -and $script:Timer) { $script:Timer.Stop() }
 }
 
 function Complete-Deployment {
-    if ($script:Timer) { $script:Timer.Stop(); $script:Timer = $null }
+    param($Run)
 
-    foreach ($line in (Read-NewLogLines)) {
-        Add-ConsoleLine $line (Get-LineKind $line)
+    foreach ($line in (Read-NewLogLines -Run $Run)) {
+        Add-RunLine $Run $line (Get-LineKind $line)
     }
 
     try {
-        if ($script:PsWorker -and $script:Handle) {
-            [void]$script:PsWorker.EndInvoke($script:Handle)
+        if ($Run.PsWorker -and $Run.Handle) {
+            [void]$Run.PsWorker.EndInvoke($Run.Handle)
         }
     }
     catch {
-        Add-ConsoleLine "ERROR al cerrar el worker: $($_.Exception.Message)" 'fail'
+        Add-RunLine $Run "ERROR al cerrar el worker: $($_.Exception.Message)" 'fail'
     }
     finally {
-        if ($script:PsWorker) {
-            if ($script:PsWorker.Runspace) { $script:PsWorker.Runspace.Dispose() }
-            $script:PsWorker.Dispose()
-            $script:PsWorker = $null
+        if ($Run.PsWorker) {
+            if ($Run.PsWorker.Runspace) { $Run.PsWorker.Runspace.Dispose() }
+            $Run.PsWorker.Dispose()
+            $Run.PsWorker = $null
         }
-        $script:Handle = $null
+        $Run.Handle = $null
     }
 
-    $summary = $script:Sync.Summary
+    $summary = $Run.Sync.Summary
     if ($summary) {
         # El resumen final es la fuente de verdad del detalle: se reemplaza
         # lo acumulado en vivo (mismo criterio que Deploy-Web.ps1).
-        $script:OkList.Clear()
-        foreach ($r in @($summary.Succeeded)) { if ($r) { $script:OkList.Add([string]$r.Equipo) } }
-        $script:FailList.Clear()
+        $Run.OkList.Clear()
+        foreach ($r in @($summary.Succeeded)) { if ($r) { $Run.OkList.Add([string]$r.Equipo) } }
+        $Run.FailList.Clear()
         foreach ($e in @($summary.Errors)) {
-            if ($e) { $script:FailList.Add([pscustomobject]@{ Equipo = [string]$e.Equipo; Message = [string]$e.Message }) }
+            if ($e) { $Run.FailList.Add([pscustomobject]@{ Equipo = [string]$e.Equipo; Message = [string]$e.Message }) }
         }
-        $script:Ok = $script:OkList.Count
-        $script:Fail = $script:FailList.Count
-        $script:OkText.Text   = [string]$script:Ok
-        $script:FailText.Text = [string]$script:Fail
+        $Run.Ok = $Run.OkList.Count
+        $Run.Fail = $Run.FailList.Count
 
-        Add-ConsoleLine ("RESUMEN | Total={0} OK={1} Fallidos={2}" -f $summary.Total, $summary.Ok, $summary.Failed) 'summary'
+        Add-RunLine $Run ("RESUMEN | Total={0} OK={1} Fallidos={2}" -f $summary.Total, $summary.Ok, $summary.Failed) 'summary'
         foreach ($e in @($summary.Errors)) {
-            if ($e) { Add-ConsoleLine ("  - {0}  {1}" -f $e.Equipo, $e.Message) 'fail' }
+            if ($e) { Add-RunLine $Run ("  - {0}  {1}" -f $e.Equipo, $e.Message) 'fail' }
         }
-        $script:StatusText.Text = "Finalizado: $($summary.Ok) OK / $($summary.Failed) fallidos de $($summary.Total)."
+        $script:StatusText.Text = "[$($Run.Label)] Finalizado: $($summary.Ok) OK / $($summary.Failed) fallidos de $($summary.Total)."
     }
-    elseif ($script:Sync.Error) {
-        $script:StatusText.Text = "Termino con error: $($script:Sync.Error)"
+    elseif ($Run.Sync.Error) {
+        $script:StatusText.Text = "[$($Run.Label)] Termino con error: $($Run.Sync.Error)"
     }
     else {
-        $script:StatusText.Text = 'Finalizado.'
+        $script:StatusText.Text = "[$($Run.Label)] Finalizado."
     }
 
-    $script:Running = $false
-    $script:BtnRun.IsEnabled = $true
-    $script:BtnStop.IsEnabled = $false
-    $script:Rail.IsEnabled = $true
-    if ($script:DetailMode) { Update-DetailPanel }
+    $Run.Running = $false
+    $Run.Cancelling = $false
+    if ($Run.TaskId -eq $script:ViewTask) {
+        Update-ProgressView
+        if ($script:DetailMode) { Update-DetailPanel }
+    }
+    Update-RunChips
+    Update-Buttons
 }
 
+# Detiene SOLO la corrida que se esta viendo.
 function Stop-Deployment {
-    if (-not $script:Running) { return }
-    $script:Sync.Cancel['Cancel'] = $true
-    $script:BtnStop.IsEnabled = $false
-    $script:StatusText.Text = 'Cancelando: no se encolan mas equipos y se detienen los jobs en curso...'
-    Add-ConsoleLine 'Cancelacion solicitada. Esperando a que se detengan los jobs en curso...' 'warn'
+    $run = Get-ViewRun
+    if (-not $run -or -not $run.Running -or $run.Cancelling) { return }
+    $run.Sync.Cancel['Cancel'] = $true
+    $run.Cancelling = $true
+    $script:StatusText.Text = "[$($run.Label)] Cancelando: no se encolan mas equipos y se detienen los jobs en curso..."
+    Add-RunLine $run 'Cancelacion solicitada. Esperando a que se detengan los jobs en curso...' 'warn'
+    Update-RunChips
+    Update-Buttons
 }
 
 # ---------------------------------------------------------------------
@@ -1342,9 +1612,12 @@ function Update-DetailCount {
     $script:DetailList.Visibility   = 'Collapsed'
     $script:DetailHeader.Visibility = 'Collapsed'
     $script:DetailEmpty.Visibility  = 'Visible'
-    $script:DetailEmpty.Text = if (-not $script:HasRun) { 'Todavia no se ejecuto ninguna tarea.' }
-        elseif ($isOk)  { if ($script:Running) { 'Todavia ningun equipo termino OK.' } else { 'Ningun equipo termino OK.' } }
-        else            { if ($script:Running) { 'Por ahora ningun equipo fallo.' } else { 'Ningun equipo fallo.' } }
+    # Los mensajes dependen de la corrida que se esta viendo.
+    $v = Get-ViewRun
+    $corriendo = [bool]($v -and $v.Running)
+    $script:DetailEmpty.Text = if (-not $v) { 'Todavia no se ejecuto ninguna tarea.' }
+        elseif ($isOk)  { if ($corriendo) { 'Todavia ningun equipo termino OK.' } else { 'Ningun equipo termino OK.' } }
+        else            { if ($corriendo) { 'Por ahora ningun equipo fallo.' } else { 'Ningun equipo fallo.' } }
 }
 
 # Redibuja el panel entero (al abrirlo, al cambiar de OK a Fallidos, al
@@ -1435,7 +1708,13 @@ $script:BtnOpenImports.Add_Click({
             'Imports', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
     }
 })
-$script:BtnClear.Add_Click({ $script:LogList.Items.Clear() })
+$script:BtnClear.Add_Click({
+    # Limpia la consola de la tarea que se esta viendo (tambien su copia, asi
+    # no reaparece al volver a su ficha).
+    $v = Get-ViewRun
+    if ($v) { $v.Lines.Clear() }
+    $script:LogList.Items.Clear()
+})
 $script:TileOk.Add_Click({ Show-Detail -Mode 'ok' })
 $script:TileFail.Add_Click({ Show-Detail -Mode 'fail' })
 $script:BtnCloseDetail.Add_Click({ if ($script:DetailMode) { Show-Detail -Mode $script:DetailMode } })
@@ -1455,20 +1734,26 @@ $script:RbPaste.Add_Checked({
 })
 
 $script:BtnOpenLog.Add_Click({
-    if ($script:CurrentLog -and (Test-Path $script:CurrentLog)) {
-        Start-Process notepad.exe $script:CurrentLog
+    # El log de la tarea que se esta viendo; si no hay ninguna, el de la
+    # tarea elegida en el menu.
+    $v = Get-ViewRun
+    $log = if ($v) { $v.LogPath } else { $script:CurrentLog }
+    if ($log -and (Test-Path $log)) {
+        Start-Process notepad.exe $log
     }
     else {
         [void][System.Windows.MessageBox]::Show(
-            "Todavia no existe $($script:CurrentLog).",
+            "Todavia no existe $log.",
             'Log', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
     }
 })
 
 $window.Add_Closing({
-    if ($script:Running) {
+    $activas = Get-ActiveRuns
+    if ($activas.Count -gt 0) {
+        $nombres = ($activas | ForEach-Object { $_.Label }) -join ', '
         $r = [System.Windows.MessageBox]::Show(
-            'Hay un despliegue en curso. Cancelarlo y cerrar?',
+            "Hay $($activas.Count) despliegue(s) en curso: $nombres. Cancelarlos y cerrar?",
             'Despliegue en curso',
             [System.Windows.MessageBoxButton]::YesNo,
             [System.Windows.MessageBoxImage]::Warning)
@@ -1476,7 +1761,7 @@ $window.Add_Closing({
             $_.Cancel = $true
             return
         }
-        $script:Sync.Cancel['Cancel'] = $true
+        foreach ($run in $activas) { $run.Sync.Cancel['Cancel'] = $true }
     }
     if ($script:Timer) { $script:Timer.Stop() }
 })
@@ -1489,13 +1774,16 @@ $window.Add_SizeChanged({ Update-ConsoleHeight })
 # Al volver a la ventana (tipico: editaste el .txt en el Bloc de notas y
 # volves) se relee la lista sola, sin tener que acordarse de "Recargar".
 $window.Add_Activated({
-    if ($script:CurrentTask -and -not $script:Running) { Update-ComputerPreview }
+    # Con multitarea el formulario sigue disponible mientras algo corre: la
+    # corrida en curso ya tiene su lista, esto solo refresca la vista previa.
+    if ($script:CurrentTask) { Update-ComputerPreview }
 })
 
 $window.Add_KeyDown({
-    # F5 ejecuta, Escape cancela: comodo cuando se repite la misma tarea.
-    if ($_.Key -eq 'F5' -and -not $script:Running) { Start-Deployment }
-    elseif ($_.Key -eq 'Escape' -and $script:Running) { Stop-Deployment }
+    # F5 ejecuta la tarea elegida en el menu (Start-Deployment valida si ya
+    # corre o si se llego al maximo); Escape cancela la que se esta viendo.
+    if ($_.Key -eq 'F5') { Start-Deployment }
+    elseif ($_.Key -eq 'Escape') { Stop-Deployment }
 })
 
 # ---------------------------------------------------------------------
@@ -1530,6 +1818,7 @@ $script:HeaderRoot.Text = $script:Root
 Update-ConsoleHeight
 Build-Rail
 Select-Task -TaskId $script:Tasks[0].Id
+Update-ProgressView
 Add-ConsoleLine 'Deployment Toolkit - GUI lista. Elegi una tarea, revisa la lista de equipos y presiona Ejecutar (o F5).' 'muted'
 Add-ConsoleLine "Repositorio: $($script:Config.RepositoryRoot)" 'muted'
 

@@ -339,7 +339,7 @@ import del módulo, `Get-DeploymentRoot`/`Get-DeploymentConfig`,
 `Invoke-ThrottledDeployment` completo (con un scriptblock de prueba en
 vez de `psexec` real) — incluyendo el camino de integración real
 encadenado hasta `Write-DeploymentSummary` con lista de equipos vacía.
-Ya se corrió con PowerShell 7 real: **59/59 OK** (detalle de los 2
+Ya se corrió con PowerShell 7 real: **60/60 OK** (detalle de los 2
 bugs reales que salieron de esa corrida y ya están corregidos, en
 `CHANGES.md` sección 5). Correrlo primero, siempre, antes de confiar en
 un cambio. Lo único que NO prueba (necesita `psexec.exe` + equipos
@@ -418,6 +418,39 @@ encolar equipos nuevos y hace `Stop-Job` de los que sigan corriendo,
 devolviendo los resultados parciales. Tiene que frenarse **desde
 adentro** del runspace worker porque `Start-Job` registra los jobs por
 runspace: `Get-Job`/`Stop-Job` desde el hilo de UI no los vería.
+
+Con multitarea (7.3.1), cada corrida tiene su propio `CancelFlag`, así que
+"Detener" frena solo la tarea que se está viendo.
+
+### 7.3.1 Multitarea: varias tareas a la vez
+
+Todo lo de 7.2 es **por corrida**: cada tarea lanzada tiene su runspace,
+su cola, su `CancelFlag`, su offset del log, sus contadores, sus listas
+OK/Fallidos y las líneas de su consola, en un objeto que arma
+`New-RunState`. Se guardan en `$script:Runs`, uno por tarea (el que está en
+curso o el último que terminó; relanzar la tarea reemplaza el suyo). Un
+solo `DispatcherTimer` recorre las corridas activas en cada tick.
+
+- **El módulo no cambió para esto**: cada tarea escribe en su propio
+  `.log` con su propio mutex (`Global\deploy_app`, `Global\copy_files`,
+  ...), así que dos tareas distintas no se pisan. Hay una prueba que corre
+  dos despliegues simulados en runspaces separados y verifica que no se
+  crucen equipos ni líneas de log.
+- **Lo que se bloquea**: la misma tarea dos veces a la vez (compartirían
+  el log y se mezclarían las consolas) y más de `-MaxTareas` tareas en
+  paralelo (2 por defecto, hasta 7). El botón "Ejecutar" se deshabilita y
+  la tarjeta de ejecución dice por qué.
+- **Vista vs. menú**: la corrida que se ve en "Progreso y consola"
+  (`$script:ViewTask`) es independiente de la tarea elegida en el menú. Así
+  se puede preparar la segunda tarea sin perder de vista la primera. Las
+  fichas cambian la vista; "Ejecutar" pasa a mostrar lo recién lanzado.
+- **Consola por corrida**: las líneas se guardan en la corrida
+  (`Add-RunLine`) y solo se pintan si es la que se ve; al cambiar de ficha
+  se repinta la consola con las de esa corrida. `$script:OkList` y
+  `$script:FailList` apuntan a las listas de la corrida vista, así que el
+  detalle OK/Fallidos no necesitó cambios.
+- **Carga**: la concurrencia real es la suma de los throttle de las tareas
+  en curso. Por eso el máximo por defecto es 2.
 
 ### 7.4 El formulario es declarativo
 
@@ -505,13 +538,23 @@ acá es el navegador pidiendo `/api/progress` cada 500 ms.
 La API es chica: `/api/init` (catálogo), `/api/imports`, `/api/computers`,
 `/api/run`, `/api/progress`, `/api/resultados` y `/api/stop`.
 
-`/api/resultados?tipo=ok|fail` es el detalle que se abre al hacer click en
-OK o Fallidos (mismo criterio que la GUI, sección 7.2: listas en vivo que
-al final se reemplazan por el resumen). Va aparte de `/api/progress` a
-propósito: con cientos de equipos no tiene sentido mandar la lista entera
-cada 500 ms, así que el navegador la pide solo con el panel abierto y
-cuando el contador cambió. Hostnames y mensajes se insertan siempre con
-`textContent`, nunca como HTML.
+`/api/resultados?tipo=ok|fail&tarea=<id>` es el detalle que se abre al
+hacer click en OK o Fallidos (mismo criterio que la GUI, sección 7.2:
+listas en vivo que al final se reemplazan por el resumen). Va aparte de
+`/api/progress` a propósito: con cientos de equipos no tiene sentido mandar
+la lista entera cada 500 ms, así que el navegador la pide solo con el panel
+abierto y cuando el contador cambió. Hostnames y mensajes se insertan
+siempre con `textContent`, nunca como HTML.
+
+**Multitarea** (mismo diseño que la GUI, sección 7.3.1): el servidor guarda
+una corrida por tarea en `$script:Runs` y acepta hasta `-MaxTareas`
+distintas a la vez; `/api/run` rechaza la misma tarea dos veces y el
+exceso sobre el máximo. `/api/progress` devuelve **todas** las corridas en
+un solo pedido (`corridas: [...]`) porque las líneas nuevas del log se
+consumen al leerlas: si el navegador preguntara solo por la que está
+mirando, la consola de la otra quedaría con huecos. Cada corrida lleva un
+`seq` creciente para descartar una respuesta vieja que llegue después de
+relanzar esa tarea. `/api/stop?tarea=<id>` detiene solo esa corrida.
 
 **Seguridad.** Escucha solo en `127.0.0.1` y exige un token aleatorio,
 distinto en cada arranque, que viaja en la URL. Sin eso, cualquier página
