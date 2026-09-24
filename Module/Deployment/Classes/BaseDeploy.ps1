@@ -51,11 +51,12 @@ class BaseDeploy {
 
     [pscustomobject] TestPingEquipo() {
         $this.WriteLogSafe("Ping test")
+        $motivo = ''
         try {
             $ping = New-Object System.Net.NetworkInformation.Ping
             $reply = $ping.Send($this.Equipo, [BaseDeploy]::Settings.PingTimeoutMs)
 
-            if ($reply.Status -eq 'Success') {
+            if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
                 $this.WriteLogSafe("Ping OK a $($this.Equipo)")
                 return [pscustomobject]@{
                     Success  = $true
@@ -65,19 +66,44 @@ class BaseDeploy {
                     msg      = "Ping OK a $($this.Equipo)"
                 }
             }
-            throw "Ping FAIL a $($this.Equipo): $($reply.Status)"
+            # Hubo respuesta, pero no un eco: el motivo es el IPStatus.
+            $motivo = $this.DescribePingFailure($reply.Status.ToString(), '')
         }
         catch {
-            $msg = "ERROR Ping: $($_.Exception.Message)"
-            $this.WriteLogSafe($msg)
-            return [pscustomobject]@{
-                Success  = $false
-                ExitCode = -1
-                StdOut   = ""
-                StdErr   = $msg
-                msg      = $msg
-            }
+            # El ping ni siquiera salio (tipicamente, el nombre no resuelve).
+            # Lo que llega es "Exception calling Send ... An exception
+            # occurred during a Ping request", que no dice nada: la causa real
+            # esta al fondo de la cadena de InnerException, casi siempre una
+            # SocketException con su SocketErrorCode (HostNotFound, ...).
+            $causa = $_.Exception
+            while ($causa.InnerException) { $causa = $causa.InnerException }
+            $codigo = ''
+            if ($causa -is [System.Net.Sockets.SocketException]) { $codigo = $causa.SocketErrorCode.ToString() }
+            $motivo = $this.DescribePingFailure($codigo, $causa.Message)
         }
+
+        $msg = "ERROR Ping: sin respuesta de $($this.Equipo): $motivo"
+        $this.WriteLogSafe($msg)
+        return [pscustomobject]@{
+            Success  = $false
+            ExitCode = -1
+            StdOut   = ""
+            StdErr   = $msg
+            msg      = $msg
+        }
+    }
+
+    # Traduce el codigo de falla del ping a un motivo legible, con la tabla
+    # Ping.FailureReasons de Deployment.Constants.psd1. El codigo va al final
+    # entre corchetes para poder buscarlo. Si no esta en la tabla, se muestra
+    # el codigo y el mensaje original del sistema, sin inventar nada.
+    hidden [string] DescribePingFailure([string]$codigo, [string]$detalle) {
+        $texto = ''
+        if ($codigo) { $texto = [BaseDeploy]::Settings.Ping.FailureReasons.$codigo }
+        if ($texto) { return "$texto [$codigo]" }
+        if ($codigo -and $detalle) { return "$detalle [$codigo]" }
+        if ($codigo) { return $codigo }
+        return $detalle
     }
 
     # Sin default en $remoteSubPath: los metodos de clase ignoran los valores

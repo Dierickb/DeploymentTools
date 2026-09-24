@@ -1,6 +1,6 @@
 # Public/Get-DeploymentTaskCatalog.ps1
 #
-# Catalogo declarativo de las 7 tareas: que funcion del modulo invoca cada
+# Catalogo declarativo de las tareas: que funcion del modulo invoca cada
 # una, con que archivo de imports\ y que .log se corresponde, y que campos
 # tiene su formulario.
 #
@@ -137,6 +137,12 @@ function Get-DeploymentTaskCatalog {
             Id = 'nessus'; Label = 'Scan Nessus/Tenable'; Function = 'Invoke-NessusScan'
             ImportFile = $t.nessus.ImportFile; LogFile = $t.nessus.LogFile; Throttle = $t.nessus.ThrottleLimit
             Desc = 'Dispara un scan del agente de Tenable/Nessus en cada equipo. No tiene parametros propios mas alla del throttle.'
+            Fields = @()
+        }
+        [ordered]@{
+            Id = 'ping'; Label = 'Verificar conectividad (ping)'; Function = 'Invoke-PingCheck'
+            ImportFile = $t.ping.ImportFile; LogFile = $t.ping.LogFile; Throttle = $t.ping.ThrottleLimit
+            Desc = 'Solo hace ping a cada equipo, sin copiar ni ejecutar nada. OK = en red; Fallidos = sin respuesta, con el motivo. Click en cada contador para ver la lista y copiar los hostnames.'
             Fields = @()
         }
     )

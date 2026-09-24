@@ -20,7 +20,7 @@ Read before changing anything non-trivial:
 
 ```powershell
 # Test suite: no psexec or network needed, runs on Windows/macOS/Linux (pwsh). Writes only to the system temp dir.
-pwsh -NoProfile -File ./tests/Test-DeploymentToolkit.ps1      # expect "68 OK / 0 fallidos"
+pwsh -NoProfile -File ./tests/Test-DeploymentToolkit.ps1      # expect "72 OK / 0 fallidos"
 
 # Web UI, safe on macOS: -Simular never touches a machine (hosts containing "fail" report as failed)
 pwsh ./Deploy-Web.ps1 -Simular [-Port <n>] [-NoBrowser] [-MaxTareas <n>]   # -Simular still writes to logs/<task>.log
@@ -42,7 +42,7 @@ One module (`Module/Deployment/`), four front-ends that never duplicate logic: `
 - `Classes/` (`BaseDeploy`, `KbWindows : BaseDeploy`) are **not** loaded by the module. `Invoke-ThrottledDeployment` dot-sources them inside each `Start-Job` via `-ClassPaths` and injects the config as JSON into `[BaseDeploy]::Settings`. Classes read timeouts, psexec path, etc. from there. Code that uses the classes outside the runner (tests) must set `[BaseDeploy]::Settings` first. A derived class must come after its base in `-ClassPaths`.
 - Each public `Invoke-*` does `$task = $config.Tasks.<id>`, fills unset `ThrottleLimit`/`ElapsedTime`/`LogPath`/`LogMutexName` from it, builds an `$action` scriptblock `param($Equipo, $LogPath, $LogMutexName, ...)`, passes task args as an `[ordered]` `$actionArgs` in the **same order** as that `param()` (tested), calls `Invoke-ThrottledDeployment ... -Settings $config`, and returns `Write-DeploymentSummary`. Steps for adding a task are in ARQUITECTURA §3.4.
 - `Get-DeploymentTaskCatalog` is the declarative task/form definition shared by the GUI and web UI. It holds only labels, hints and field types; defaults come from the config. Field `Name`s must match real parameter names (tested). `Deploy-Menu.ps1` and `scripts/` do **not** read the catalog, so a new task must be added there separately.
-- All 7 public tasks pass through `-ProgressQueue` (ConcurrentQueue of JobStart/JobDone events) and `-CancelFlag` (synchronized hashtable). The UIs run tasks in a separate runspace.
+- All task functions (one per catalog entry, 8 today) pass through `-ProgressQueue` (ConcurrentQueue of JobStart/JobDone events) and `-CancelFlag` (synchronized hashtable). The UIs run tasks in a separate runspace.
 - Logs: one file per task in `logs/` (the task's `LogFile`), written through `BaseDeploy.WriteLogSafe` under the task's named mutex (`MutexName`). Line format: `<Log.DateFormat> | <equipo> | <mensaje>`.
 
 ## Invariants and gotchas (tests enforce most of these)
@@ -57,7 +57,8 @@ One module (`Module/Deployment/`), four front-ends that never duplicate logic: `
 - Use `return ,@(...)` (unary comma) where an empty collection must not collapse to `$null`. Exception: `Read-ComputerList` returns a plain `@(...)`, so callers must assign it as `$x = @(Read-ComputerList ...)` (tested); adding the comma there would break callers that already wrap it in `@()`. Use `[AllowEmptyCollection()]` on mandatory array params that can be empty (`ComputerList`, `ClassPaths`).
 - The progress peek uses `Receive-Job -Keep`. Removing `-Keep` empties the final summary.
 - **Any `.ps1`/`.psd1` containing non-ASCII characters must be saved as UTF-8 with BOM.** Production runs Windows PowerShell 5.1, which reads BOM-less files as ANSI. When editing with tools that may drop the BOM, check the first bytes (`head -c3 file | xxd -p` → `efbbbf`). Pure-ASCII files may stay BOM-less.
-- **No environment data in code**: no IPs, server paths, or scan UUIDs (a test greps for them). These values live only in `config/config.psd1` (copied from `config.example.psd1`, not meant to be committed; note there is no `.gitignore` yet). They default to empty in the constants and the task that needs one fails with a clear message.
+- **No environment data in code**: no IPs, server paths, or scan UUIDs (a test greps for them). These values live only in `config/config.psd1` (copied from `config.example.psd1`; ignored by `.gitignore`, as are `logs/*.log`). They default to empty in the constants and the task that needs one fails with a clear message.
 - Target runtime is PowerShell 5.1 (`#Requires -Version 5.1`). Don't use pwsh-7-only syntax (`??`, `?.`, ternary, `ForEach-Object -Parallel`) in module/entry-point code.
 - In the GUI, long work runs in the worker runspace and control updates run on the UI thread (`DispatcherTimer`).
+- Task `ping` (`Invoke-PingCheck`) only runs `BaseDeploy.TestPingEquipo()` and needs no psexec, so on macOS it works for real through `Deploy-Web.ps1` without `-Simular` (it writes `logs/ping_check.log`).
 - `imports/*.txt` are host lists copied from the original project. Some filenames have typos (e.g. `copy_install._computers.txt`); leave them as they are.

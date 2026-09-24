@@ -29,7 +29,7 @@ cmd_execute\Deploy-Web.cmd          (Windows)
 pwsh ./Deploy-Web.ps1                (macOS / Linux)
 ```
 
-Levanta un servidor local y abre el navegador. Mismas 7 tareas, mismo
+Levanta un servidor local y abre el navegador. Mismas 8 tareas, mismo
 módulo, mismo progreso en vivo. Escucha solo en `127.0.0.1` y exige un
 token aleatorio que cambia en cada arranque, así ninguna otra pestaña del
 navegador puede dispararle un despliegue. Opciones: `-Port 8899` si el
@@ -50,7 +50,7 @@ powershell.exe -STA -File .\Deploy-Gui.ps1
 powershell.exe -STA -File .\Deploy-Gui.ps1 -MaxTareas 3   # mas tareas a la vez
 ```
 
-Ventana con las mismas 7 tareas: elegís la tarea a la izquierda, de
+Ventana con las mismas 8 tareas: elegís la tarea a la izquierda, de
 dónde sale la lista de equipos, completás los parámetros, y "Ejecutar".
 Valida los parámetros antes de arrancar (campos obligatorios, formato
 `YYYY-MM` de la carpeta de KB, etc.) en vez de fallar a mitad de camino.
@@ -66,7 +66,7 @@ ejemplo, desplegar una aplicación mientras se copian archivos. En
 "Progreso y consola en vivo" aparece una ficha por tarea con su avance y
 sus OK/Fallidos; hacé click en una ficha para ver su barra, su consola y
 su detalle. "Detener" frena solo la tarea que estás viendo. Por defecto
-se permiten **2 tareas a la vez** (`-MaxTareas` para cambiarlo, hasta 7).
+se permiten **2 tareas a la vez** (`-MaxTareas` para cambiarlo, hasta 8).
 La misma tarea no puede correr dos veces a la vez, porque las dos
 escribirían en el mismo log. Ojo con la carga: la concurrencia real es la
 suma de los throttle (5 + 5 = 10 equipos atendidos al mismo tiempo desde
@@ -118,6 +118,9 @@ usá los scripts de `scripts\`, con los parámetros por línea de comandos
 
 # Nessus / Tenable
 .\scripts\run_nessus_scan.ps1 -ComputersFile nessus_scan_computers.txt
+
+# Verificar conectividad (solo ping). exit 1 si algún equipo no responde.
+.\scripts\run_ping_check.ps1 -ComputersFile computers.txt
 
 # Deploy de una app puntual
 .\scripts\run_deploy_app.ps1 -ComputersFile deploy_app_computers.txt `
@@ -176,6 +179,7 @@ Deployment/
       Invoke-KbDeployment.ps1     Reemplaza execute\kb_execute.ps1
       Invoke-OfficeUpdate.ps1     Reemplaza execute\office_update.ps1
       Invoke-NessusScan.ps1       Reemplaza execute\nessus_scan.ps1
+      Invoke-PingCheck.ps1        Solo ping: qué equipos están en red (tarea nueva)
   scripts\        Wrappers no interactivos (para Scheduled Tasks) sobre el módulo
   cmd_execute\    Lanzadores .cmd (Deploy-Gui.cmd y Deploy-Menu.cmd son los principales)
   tests\          Test-DeploymentToolkit.ps1 — auto-diagnóstico sin psexec/red
@@ -193,7 +197,7 @@ Deployment/
 
 - **Un solo módulo, cuatro formas de usarlo**: la interfaz web, la
   interfaz gráfica WPF, el menú de consola y los scripts de `scripts\` llaman exactamente a las
-  mismas 7 funciones del módulo — nunca hay dos copias de la misma
+  mismas 8 funciones del módulo — nunca hay dos copias de la misma
   lógica. La GUI además corre esas funciones en un runspace aparte del
   hilo de ventana, así la interfaz no se congela durante el despliegue
   (ver `ARQUITECTURA.md`, sección 7).

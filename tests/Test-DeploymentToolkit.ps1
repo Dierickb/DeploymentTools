@@ -137,9 +137,10 @@ Test-Case "Sintaxis OK: Classes\BaseDeploy.ps1 + Classes\KbWindows.ps1 (cargadas
 Test-Case "El modulo Deployment.psd1 importa sin errores" {
     Import-Module (Join-Path $moduleDir 'Deployment.psd1') -Force
     $cmds = Get-Command -Module Deployment
-    # 7 tareas + Get-DeploymentConfig + Read-ComputerList + el catalogo
-    # (ver Deployment.psm1: los puntos de entrada las necesitan exportadas).
-    Assert-True ($cmds.Count -eq 11) "se esperaban 11 funciones exportadas, hay $($cmds.Count): $(($cmds.Name | Sort-Object) -join ', ')"
+    # 8 tareas + Get-DeploymentConfig + Read-ComputerList + el catalogo +
+    # Invoke-SimulatedDeployment (ver Deployment.psm1: los puntos de entrada
+    # las necesitan exportadas).
+    Assert-True ($cmds.Count -eq 12) "se esperaban 12 funciones exportadas, hay $($cmds.Count): $(($cmds.Name | Sort-Object) -join ', ')"
 }
 
 # Para probar los helpers Private/ (no exportados por el modulo) y las
@@ -483,11 +484,10 @@ Test-Case "Sin CancelFlag el comportamiento no cambia (no se cancela solo)" {
 #     Si alguien agrega una tarea nueva y se olvida del pass-through, la
 #     GUI queda muda (sin progreso) o sin poder cancelar.
 # -----------------------------------------------------------------
-Test-Case "Las 7 funciones publicas exponen -ProgressQueue y -CancelFlag" {
-    $publicFunctions = @(
-        'Invoke-DeployApp', 'Invoke-CopyFiles', 'Invoke-CopyInstall', 'Invoke-RemoteCommand',
-        'Invoke-KbDeployment', 'Invoke-OfficeUpdate', 'Invoke-NessusScan'
-    )
+Test-Case "Las funciones de todas las tareas exponen -ProgressQueue y -CancelFlag" {
+    # Sale del catalogo y no de una lista escrita aca: una tarea nueva queda
+    # cubierta sola.
+    $publicFunctions = @(Get-DeploymentTaskCatalog | ForEach-Object { $_.Function })
     foreach ($fn in $publicFunctions) {
         $cmd = Get-Command $fn -ErrorAction Stop
         Assert-True $cmd.Parameters.ContainsKey('ProgressQueue') "$fn deberia exponer -ProgressQueue"
@@ -544,9 +544,9 @@ Test-Case "Los campos del catalogo mapean a parametros reales del modulo" {
     Assert-Equal 0 $problemas.Count "campos del catalogo que no matchean: $($problemas -join '; ')"
 }
 
-Test-Case "El catalogo trae las 7 tareas con lo minimo que una interfaz necesita" {
+Test-Case "El catalogo trae las 8 tareas con lo minimo que una interfaz necesita" {
     $cat = @(Get-DeploymentTaskCatalog)
-    Assert-Equal 7 $cat.Count "deberian ser 7 tareas"
+    Assert-Equal 8 $cat.Count "deberian ser 8 tareas"
     foreach ($t in $cat) {
         foreach ($clave in @('Id', 'Label', 'Function', 'ImportFile', 'LogFile', 'Throttle', 'Desc', 'Fields')) {
             Assert-True ($t.Contains($clave)) "la tarea $($t.Id) deberia tener $clave"
@@ -804,6 +804,42 @@ Test-Case "Ningun punto de entrada asigna Read-ComputerList sin envolverlo en @(
 }
 
 # -----------------------------------------------------------------
+# 20c. Invoke-PingCheck: la tarea de solo ping, por el camino real (runner,
+#      job, clase BaseDeploy). 127.0.0.1 responde sin red externa; un nombre
+#      .invalid no resuelve nunca (RFC 2606), asi que tiene que salir fallido
+#      con el motivo.
+# -----------------------------------------------------------------
+Test-Case "Invoke-PingCheck separa los equipos en red de los que no responden" {
+    $tmpLog = Join-Path $tmpDir "test_ping_check_$(Get-Random).log"
+    $summary = Invoke-PingCheck -ComputerList @('127.0.0.1', 'equipo-inexistente.invalid') `
+        -LogPath $tmpLog -LogMutexName "Global\test_ping_check_$(Get-Random)" -WarningAction SilentlyContinue
+
+    Assert-Equal 2 $summary.Total "deberia procesar los 2 equipos"
+    Assert-Equal '127.0.0.1' (@($summary.Succeeded)[0].Equipo) "127.0.0.1 deberia estar en red"
+    Assert-Equal 'equipo-inexistente.invalid' (@($summary.Errors)[0].Equipo) "el nombre .invalid deberia fallar"
+    Assert-True ([bool]@($summary.Errors)[0].Message) "el fallido deberia traer el motivo"
+    Assert-True ((Get-Content $tmpLog -Raw) -like '*Ping OK a 127.0.0.1*') "el log deberia registrar el ping"
+
+    # El motivo tiene que ser el legible de la tabla, no el "An exception
+    # occurred during a Ping request" de .NET.
+    $motivo = [string]@($summary.Errors)[0].Message
+    $esperado = $script:testConfig.Ping.FailureReasons.HostNotFound
+    Assert-True ($motivo.Contains($esperado) -and $motivo.Contains('[HostNotFound]')) "motivo poco claro: '$motivo'"
+    Remove-Item $tmpLog -ErrorAction SilentlyContinue
+}
+
+Test-Case "El motivo de un ping fallido sale de la tabla, o del sistema si no esta en ella" {
+    $tmpLog = Join-Path $tmpDir "test_ping_motivo_$(Get-Random).log"
+    $deploy = [BaseDeploy]::new('equipo-prueba', $tmpLog, "Global\test_ping_motivo_$(Get-Random)")
+    $tabla = $script:testConfig.Ping.FailureReasons
+
+    Assert-Equal "$($tabla.TimedOut) [TimedOut]" $deploy.DescribePingFailure('TimedOut', '') "codigo conocido"
+    Assert-Equal 'detalle del sistema [CodigoRaro]' $deploy.DescribePingFailure('CodigoRaro', 'detalle del sistema') "codigo desconocido: mensaje original"
+    Assert-Equal 'detalle del sistema' $deploy.DescribePingFailure('', 'detalle del sistema') "sin codigo: mensaje original"
+    Remove-Item $tmpLog -ErrorAction SilentlyContinue
+}
+
+# -----------------------------------------------------------------
 # 21. Deployment.Constants.psd1: la fuente unica de los valores fijos.
 #     Cada tarea del catalogo tiene su identidad ahi, y dos tareas nunca
 #     comparten log ni mutex (se pisarian corriendo a la vez).
@@ -901,13 +937,14 @@ Test-Case "Ningun valor de Deployment.Constants.psd1 esta repetido como literal 
     $constPath = Join-Path $moduleDir 'Deployment.Constants.psd1'
     $const = Import-PowerShellDataFile -Path $constPath
 
-    $valores = @()
-    foreach ($task in $const.Tasks.Values) { $valores += @($task.Values | Where-Object { $_ -is [string] }) }
-    foreach ($seccion in $const.Keys | Where-Object { $_ -notin @('Tunable', 'Tasks') }) {
-        $valores += @($const[$seccion].Values | Where-Object { $_ -is [string] })
+    # Todos los textos del archivo, a cualquier profundidad (por ejemplo,
+    # Ping.FailureReasons.TimedOut), no solo el primer nivel de cada seccion.
+    $juntarTextos = {
+        param($nodo)
+        if ($nodo -is [string]) { return $nodo }
+        if ($nodo -is [hashtable]) { foreach ($v in $nodo.Values) { & $juntarTextos $v } }
     }
-    $valores += @($const.Tunable.Values | Where-Object { $_ -is [string] })
-    $valores = @($valores | Where-Object { $_ } | Select-Object -Unique)
+    $valores = @(& $juntarTextos $const | Where-Object { $_ } | Select-Object -Unique)
 
     $hallazgos = @()
     $archivos = @(Get-ChildItem -Path $root -Include '*.ps1', '*.psm1' -Recurse -File |

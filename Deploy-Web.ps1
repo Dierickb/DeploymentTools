@@ -18,7 +18,7 @@
 
     Las dos interfaces conviven y NO duplican nada:
 
-      - Las 7 tareas salen del mismo catalogo del modulo
+      - Las tareas salen del mismo catalogo del modulo
         (Get-DeploymentTaskCatalog), asi que no pueden desincronizarse.
       - El despliegue lo hacen las mismas funciones publicas
         (Invoke-DeployApp, Invoke-KbDeployment, etc.).

@@ -569,3 +569,49 @@ prueba de la sección 5.1 no lo veía porque le pasa `@()` directo a
 `run_copy_files`, `run_kb_deployment` y `run_nessus_scan` se corrieron de
 verdad con un archivo vacío (sobre una copia del proyecto, para no escribir
 en `logs\`): salen con código 0 y dejan el resumen con 0 equipos.
+
+## 12. Tarea nueva: verificar conectividad (solo ping)
+
+Hacía falta una forma de saber qué equipos están en red antes de lanzar un
+despliegue, sin copiar ni ejecutar nada. El ping ya existía
+(`BaseDeploy.TestPingEquipo()`), pero solo como primer paso de cada tarea.
+
+- **`Invoke-PingCheck`** (Public, exportada): mismo patrón que las otras
+  tareas, y su acción solo hace el ping. OK = en red; Fallidos = sin
+  respuesta, con el motivo. Usa el runner de siempre, así tiene progreso en
+  vivo, "Detener", log (`logs\ping_check.log`) y detalle OK/Fallidos sin
+  código propio.
+- **Constantes**: `Tasks.ping` (lista por defecto `computers.txt`) y
+  `TaskDefaults.ping.ThrottleLimit = 10`, porque el ping es liviano.
+- **UI**: una entrada en el catálogo alcanza para la GUI y la web, que arman
+  su menú de tareas desde ahí. Va última, así las dos siguen abriendo en la
+  misma tarea que antes. En el menú de consola es la opción 8 ("Ver logs" y
+  "Salir" pasan a 9 y 10) y, además del resumen, lista los equipos en red.
+- **`scripts\run_ping_check.ps1`**: `exit 1` si algún equipo no responde,
+  para que una tarea programada pueda alertar.
+- `-MaxTareas` acepta hasta 8 sin cambios, porque su máximo es la cantidad
+  de tareas del catálogo.
+- **Pruebas**: conteos a 8 tareas y 12 funciones exportadas; la prueba de
+  `-ProgressQueue`/`-CancelFlag` ahora saca la lista de funciones del
+  catálogo; y una prueba nueva que pasa por el runner real con `127.0.0.1`
+  (en red) y un nombre `.invalid` (sin respuesta).
+
+- **Motivo de falla legible.** Antes, un nombre que no resuelve daba *"Exception
+  calling "Send" with "2" argument(s): "An exception occurred during a Ping
+  request.""*, que no dice nada: la causa real ("HostNotFound") quedaba al
+  fondo de la cadena de excepciones. Ahora `TestPingEquipo` la busca ahí (o
+  en el `IPStatus` de la respuesta) y la traduce con la tabla nueva
+  `Ping.FailureReasons` de `Deployment.Constants.psd1`:
+  *"ERROR Ping: sin respuesta de X: el nombre no existe en DNS: revisar que
+  este bien escrito o que el equipo siga dado de alta [HostNotFound]"*. Se
+  mantiene el prefijo `ERROR` (las consolas lo pintan de rojo) y el mensaje
+  de éxito `Ping OK a X` no cambió. Como es el ping que hace cualquier
+  tarea antes de empezar, el motivo mejora en todas.
+- La prueba anti-literales ahora junta los textos de las constantes a
+  cualquier profundidad (antes solo miraba el primer nivel de cada sección).
+
+**Resultado: 72 OK / 0 fallidos.** Además se probaron de verdad en macOS,
+sobre una copia del proyecto: la web sin `-Simular` (la tarea aparece, corre
+y separa `127.0.0.1`/`localhost` del `.invalid`), el menú de consola, y
+`run_ping_check.ps1` (`exit 0` con todos en red, `exit 1` con uno caído). La
+GUI WPF hay que verla en Windows.

@@ -27,7 +27,7 @@ nunca duplican lógica entre sí:
    Es la única que corre fuera de Windows, y la que permite probar la
    interfaz desde una Mac con `-Simular`. Ver sección 9.
 2. **`Deploy-Gui.ps1`** — interfaz gráfica (WPF, solo Windows). Es la vía recomendada
-   para tareas puntuales: mismas 7 tareas del menú, con formulario,
+   para tareas puntuales: mismas 8 tareas del menú, con formulario,
    validación previa, consola en vivo y botón de cancelar. Ver la
    sección 7, que explica cómo no se traba la ventana.
 3. **`Deploy-Menu.ps1`** — interfaz interactiva de consola, para
@@ -36,9 +36,10 @@ nunca duplican lógica entre sí:
    que las otras vías.
 4. **`scripts\run_*.ps1`** — wrappers no interactivos, pensados para
    Scheduled Tasks de Windows (parámetros por línea de comandos, sin
-   nada que editar a mano). Cada uno de los 7 (`run_copy_files`,
+   nada que editar a mano). Cada uno de los 8 (`run_copy_files`,
    `run_copy_install`, `run_deploy_app`, `run_kb_deployment`,
-   `run_nessus_scan`, `run_office_update`, `run_remote_command`)
+   `run_nessus_scan`, `run_office_update`, `run_remote_command`,
+   `run_ping_check`)
    simplemente: importa el módulo, resuelve la lista de equipos con
    `Read-ComputerList`, y llama a **una** función pública del módulo.
 
@@ -48,7 +49,7 @@ nunca duplican lógica entre sí:
 ## 3. El módulo: `Module/Deployment/`
 
 ```
-Deployment.psd1 / .psm1     Manifiesto y módulo raíz (carga todo, exporta 7 funciones)
+Deployment.psd1 / .psm1     Manifiesto y módulo raíz (carga todo, exporta lo de Public\)
 Deployment.Constants.psd1   Todos los valores fijos y los defaults ajustables (ver 3.6)
 Classes/
   BaseDeploy.ps1             Ping, copia remota, PsExec, deploy de apps, Tenable
@@ -68,6 +69,7 @@ Public/                       La API del módulo: lo que se llama desde afuera
   Invoke-KbDeployment.ps1
   Invoke-OfficeUpdate.ps1
   Invoke-NessusScan.ps1
+  Invoke-PingCheck.ps1        Solo ping (verificar conectividad)
 ```
 
 ### 3.1 Cómo carga el módulo (`Deployment.psm1`)
@@ -108,7 +110,13 @@ instancia una por equipo, dentro del job de ese equipo:
   secas. Esto importa: en el código viejo, chequear el resultado con
   `if (-not $resultado)` siempre daba `$false` (un objeto no-null
   siempre es "truthy"), así que un ping fallido nunca se detectaba.
-  Todo el código nuevo chequea `.Success` explícitamente.
+  Todo el código nuevo chequea `.Success` explícitamente. Si falla, `.msg`
+  trae un motivo legible ("no respondió a tiempo...", "el nombre no existe
+  en DNS...") con el código al final entre corchetes (`[TimedOut]`,
+  `[HostNotFound]`). Sale de la tabla `Ping.FailureReasons` de las
+  constantes, según el `IPStatus` de la respuesta o el `SocketErrorCode` que
+  está al fondo de la cadena de `InnerException`. Un código que no esté en
+  la tabla se muestra con el mensaje original del sistema.
 - `CopyRemote(...)` — copia un archivo/carpeta a `\\<equipo>\C$\...`,
   y confirma que llegó (reintenta `Test-Path` hasta `CopyVerifyRetries`
   veces) antes de darlo por bueno.
@@ -452,7 +460,7 @@ Tres piezas:
 - **Runspace aparte**: el despliegue corre en su propio hilo. La ventana
   sigue repintando, se puede mover, y el botón "Detener" responde.
 - **`-ProgressQueue`** (parámetro nuevo de `Invoke-ThrottledDeployment`,
-  pass-through en las 7 funciones públicas): un
+  pass-through en las funciones de todas las tareas): un
   `ConcurrentQueue[object]` —thread-safe a propósito, lo escribe el
   worker y lo lee la UI— donde se encola un evento `JobStart` por
   equipo encolado y un `JobDone` apenas termina, con su `Success` ya
@@ -505,7 +513,7 @@ solo `DispatcherTimer` recorre las corridas activas en cada tick.
   crucen equipos ni líneas de log.
 - **Lo que se bloquea**: la misma tarea dos veces a la vez (compartirían
   el log y se mezclarían las consolas) y más de `-MaxTareas` tareas en
-  paralelo (2 por defecto, hasta 7). El botón "Ejecutar" se deshabilita y
+  paralelo (`Ui.DefaultMaxTasks` por defecto, hasta la cantidad de tareas del catálogo). El botón "Ejecutar" se deshabilita y
   la tarjeta de ejecución dice por qué.
 - **Vista vs. menú**: la corrida que se ve en "Progreso y consola"
   (`$script:ViewTask`) es independiente de la tarea elegida en el menú. Así
@@ -601,7 +609,7 @@ Existe porque WPF es exclusivo de Windows: `Deploy-Gui.ps1` no se puede
 ni abrir en una Mac. Esta sí, porque `HttpListener` y el resto son .NET
 multiplataforma.
 
-**Las dos interfaces conviven sin duplicar nada.** Las 7 tareas salen del
+**Las dos interfaces conviven sin duplicar nada.** Las 8 tareas salen del
 mismo catálogo del módulo (`Get-DeploymentTaskCatalog`), así que no pueden
 desincronizarse: agregar una tarea se hace una sola vez y aparece en las
 dos. El despliegue lo hacen las mismas funciones públicas. El progreso en
