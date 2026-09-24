@@ -1,0 +1,6 @@
+# Datos del entorno (servidores, UUID del scan): nunca se versionan.
+# Se arma copiando config/config.example.psd1.
+config/config.psd1
+
+# Logs que generan las tareas. La carpeta se mantiene con logs/.gitkeep.
+logs/*.log
