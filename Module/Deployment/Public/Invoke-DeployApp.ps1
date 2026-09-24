@@ -32,7 +32,7 @@ function Invoke-DeployApp {
 
         [string]$LogPath,
 
-        [string]$LogMutexName = 'Global\deploy_app',
+        [string]$LogMutexName,
 
         [switch]$ShowProgress,
 
@@ -49,12 +49,14 @@ function Invoke-DeployApp {
     }
 
     $config = Get-DeploymentConfig
+    $task = $config.Tasks.deployapp
     if (-not $SuccessCodes) { $SuccessCodes = $config.DefaultSuccessCodes }
-    if (-not $ThrottleLimit) { $ThrottleLimit = $config.DefaultThrottleLimit }
-    # DefaultElapsedTime de config.psd1 se aplica solo si no se paso
-    # -ElapsedTime explicito (0 = sin timeout).
-    if (-not $PSBoundParameters.ContainsKey('ElapsedTime')) { $ElapsedTime = $config.DefaultElapsedTime }
-    if (-not $LogPath) { $LogPath = Join-Path $config.LogsPath 'deploy_app.log' }
+    if (-not $ThrottleLimit) { $ThrottleLimit = $task.ThrottleLimit }
+    # El default de la tarea se aplica solo si no se paso -ElapsedTime
+    # explicito (0 = sin timeout).
+    if (-not $PSBoundParameters.ContainsKey('ElapsedTime')) { $ElapsedTime = $task.ElapsedTime }
+    if (-not $LogPath) { $LogPath = Join-Path $config.LogsPath $task.LogFile }
+    if (-not $LogMutexName) { $LogMutexName = $task.MutexName }
 
     $classPaths = @(
         Join-Path $PSScriptRoot '..\Classes\BaseDeploy.ps1'
@@ -121,7 +123,7 @@ function Invoke-DeployApp {
     $results = Invoke-ThrottledDeployment -ComputerList $ComputerList -Action $action `
         -LogPath $LogPath -LogMutexName $LogMutexName -ThrottleLimit $ThrottleLimit `
         -ActionArgs $actionArgs -ClassPaths $classPaths -ShowProgress:$ShowProgress `
-        -ProgressQueue $ProgressQueue -CancelFlag $CancelFlag
+        -ProgressQueue $ProgressQueue -CancelFlag $CancelFlag -Settings $config
 
     return Write-DeploymentSummary -Results $results -LogPath $LogPath
 }

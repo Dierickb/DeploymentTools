@@ -25,18 +25,20 @@ function Invoke-CopyInstall {
         [Parameter(Mandatory)]
         [string]$ItemName,
 
-        [string]$RemoteSubPath = 'temp',
+        # Sin pasar: el RemoteSubPath de la tarea 'copyinstall' en las constantes.
+        [string]$RemoteSubPath,
 
         [Parameter(Mandatory)]
         [string]$InstallCommand,
 
+        # En segundos. Sin pasar: el ElapsedTime de la tarea 'copyinstall'.
         [int]$ElapsedTime,
 
         [int]$ThrottleLimit,
 
         [string]$LogPath,
 
-        [string]$LogMutexName = 'Global\copy_install',
+        [string]$LogMutexName,
 
         [switch]$ShowProgress,
 
@@ -49,11 +51,16 @@ function Invoke-CopyInstall {
     )
 
     $config = Get-DeploymentConfig
-    if (-not $ThrottleLimit) { $ThrottleLimit = 1 }  # copiar+instalar suele ser pesado; 1 por defecto, como el original
-    # DefaultElapsedTime de config.psd1 se aplica solo si no se paso
-    # -ElapsedTime explicito (0 = sin timeout).
-    if (-not $PSBoundParameters.ContainsKey('ElapsedTime')) { $ElapsedTime = $config.DefaultElapsedTime }
-    if (-not $LogPath) { $LogPath = Join-Path $config.LogsPath 'copy_install.log' }
+    $task = $config.Tasks.copyinstall
+    # Copiar+instalar suele ser pesado: la tarea trae su propio throttle y
+    # timeout en TaskDefaults (Deployment.Constants.psd1).
+    if (-not $ThrottleLimit) { $ThrottleLimit = $task.ThrottleLimit }
+    # El default se aplica solo si no se paso -ElapsedTime explicito
+    # (-ElapsedTime 0 = sin timeout).
+    if (-not $PSBoundParameters.ContainsKey('ElapsedTime')) { $ElapsedTime = $task.ElapsedTime }
+    if (-not $RemoteSubPath) { $RemoteSubPath = $task.RemoteSubPath }
+    if (-not $LogPath) { $LogPath = Join-Path $config.LogsPath $task.LogFile }
+    if (-not $LogMutexName) { $LogMutexName = $task.MutexName }
 
     $classPaths = @(Join-Path $PSScriptRoot '..\Classes\BaseDeploy.ps1')
 
@@ -104,7 +111,7 @@ function Invoke-CopyInstall {
     $results = Invoke-ThrottledDeployment -ComputerList $ComputerList -Action $action `
         -LogPath $LogPath -LogMutexName $LogMutexName -ThrottleLimit $ThrottleLimit `
         -ActionArgs $actionArgs -ClassPaths $classPaths -ShowProgress:$ShowProgress `
-        -ProgressQueue $ProgressQueue -CancelFlag $CancelFlag
+        -ProgressQueue $ProgressQueue -CancelFlag $CancelFlag -Settings $config
 
     return Write-DeploymentSummary -Results $results -LogPath $LogPath
 }

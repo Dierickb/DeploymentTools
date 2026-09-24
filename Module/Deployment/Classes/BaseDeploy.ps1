@@ -18,7 +18,18 @@ class BaseDeploy {
     [string] $NessusPath = ''
     [string] $NessusScanUuid = ''
 
+    # La config ya resuelta (Get-DeploymentConfig): timeouts, ruta de psexec,
+    # formato del log, etc. Las clases corren dentro de un Start-Job, sin el
+    # modulo importado, asi que no pueden leerla solas: Invoke-ThrottledDeployment
+    # la deja aca desde el -InitializationScript de cada job. Quien use la
+    # clase por fuera del runner (las pruebas) tiene que setearla antes de
+    # crear la primera instancia.
+    static [object] $Settings
+
     BaseDeploy([string]$equipo, [string]$logPath, [string]$logMutexName) {
+        if ($null -eq [BaseDeploy]::Settings) {
+            throw "[BaseDeploy]::Settings no esta cargado. Se setea con la salida de Get-DeploymentConfig (Invoke-ThrottledDeployment lo hace solo)."
+        }
         $this.Equipo = $equipo.Trim()
         $this.LogPath = $logPath
         $this.LogMutexName = $logMutexName
@@ -26,10 +37,11 @@ class BaseDeploy {
     }
 
     [void] WriteLogSafe([string]$message) {
-        $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | $($this.Equipo) | $message"
+        $cfg = [BaseDeploy]::Settings
+        $line = "$(Get-Date -Format $cfg.Log.DateFormat) | $($this.Equipo) | $message"
 
         try {
-            if (-not $this.Mutex.WaitOne(5000)) { return }
+            if (-not $this.Mutex.WaitOne($cfg.LogMutexWaitMs)) { return }
             Add-Content -Path $this.LogPath -Value $line -Encoding UTF8
         }
         finally {
@@ -41,7 +53,7 @@ class BaseDeploy {
         $this.WriteLogSafe("Ping test")
         try {
             $ping = New-Object System.Net.NetworkInformation.Ping
-            $reply = $ping.Send($this.Equipo, 2000)
+            $reply = $ping.Send($this.Equipo, [BaseDeploy]::Settings.PingTimeoutMs)
 
             if ($reply.Status -eq 'Success') {
                 $this.WriteLogSafe("Ping OK a $($this.Equipo)")
@@ -68,14 +80,19 @@ class BaseDeploy {
         }
     }
 
+    # Sin default en $remoteSubPath: los metodos de clase ignoran los valores
+    # por defecto (ver KbWindows.DeployKB). El que habia aca nunca se usaba;
+    # quien llama pasa siempre los 4 argumentos, con el RemoteSubPath de la
+    # tarea que sale de Deployment.Constants.psd1.
     [pscustomobject] CopyRemote(
         [string]$SourcePath,
         [string]$ItemName,
-        [string]$remoteSubPath = "temp\RemoteInstall",
+        [string]$remoteSubPath,
         [switch]$Recurse
     ) {
+        $cfg = [BaseDeploy]::Settings
         try {
-            $remoteRoot = "\\$($this.Equipo)\C$"
+            $remoteRoot = "\\$($this.Equipo)\$($cfg.Remote.AdminShare)"
             $remoteUNC  = Join-Path $remoteRoot $remoteSubPath
 
             if (Test-Path $remoteUNC) {
@@ -97,9 +114,9 @@ class BaseDeploy {
                 Copy-Item -Path $sourceFull -Destination $remoteUNC -Force -ErrorAction Stop
             }
 
-            Start-Sleep -Seconds 2
+            Start-Sleep -Seconds $cfg.CopyVerifySettleSeconds
 
-            for ($i = 0; $i -lt 30; $i++) {
+            for ($i = 0; $i -lt $cfg.CopyVerifyRetries; $i++) {
                 if (Test-Path $destFull) {
                     $this.WriteLogSafe("$destFull validado en destino")
                     return [pscustomobject]@{
@@ -110,7 +127,7 @@ class BaseDeploy {
                         msg      = "Copiado correctamente: $sourceFull --> $destFull"
                     }
                 }
-                Start-Sleep -Seconds 1
+                Start-Sleep -Seconds $cfg.CopyVerifyIntervalSeconds
             }
 
             throw "ERROR CopyRemote: No se encontró el item en destino tras la copia: $destFull"
@@ -160,7 +177,7 @@ class BaseDeploy {
 
         try {
             $psi = [System.Diagnostics.ProcessStartInfo]::new()
-            $psi.FileName = 'psexec.exe'
+            $psi.FileName = [BaseDeploy]::Settings.PsExecPath
             $psi.Arguments = $arguments
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
@@ -213,9 +230,9 @@ class BaseDeploy {
 
             # Una vez que el proceso terminó (normal o por Kill()), sus
             # streams se cierran y los Task ya deberían completar solos;
-            # el timeout de 5s acá es solo un resguardo, no el mecanismo
+            # PsExecStreamWaitMs acá es solo un resguardo, no el mecanismo
             # principal de control de tiempo (ese es el WaitForExit de arriba).
-            [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 5000) | Out-Null
+            [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), [BaseDeploy]::Settings.PsExecStreamWaitMs) | Out-Null
             $stdout = if ($stdoutTask.IsCompleted) { $stdoutTask.Result } else { "" }
             $stderr = if ($stderrTask.IsCompleted) { $stderrTask.Result } else { "" }
 
@@ -325,7 +342,7 @@ class BaseDeploy {
 
             $argumentsFile = "scan-triggers --start --uuid=`"$scanUuid`""
             $cmd = "`"$nessusPath`" $argumentsFile"
-            $result = $this.InvokePsExec($cmd, $false, $true, 420)
+            $result = $this.InvokePsExec($cmd, $false, $true, [BaseDeploy]::Settings.TenableTimeoutSeconds)
 
             if (-not $result -or -not $result.Success) {
                 $errorMsg = if ($result) { $result.ErrorMessage } else { "Resultado NULL desde InvokePsExec" }

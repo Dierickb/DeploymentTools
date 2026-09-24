@@ -42,7 +42,8 @@ function Invoke-ThrottledDeployment {
         [Parameter(Mandatory)]
         [string]$LogMutexName,
 
-        [int]$ThrottleLimit = 5,
+        # Sin default propio: si no se pasa, sale de la config (DefaultThrottleLimit).
+        [int]$ThrottleLimit,
 
         # OrderedDictionary a propósito: el orden de .Values debe coincidir
         # con el orden de los parámetros extra del scriptblock $Action.
@@ -61,8 +62,8 @@ function Invoke-ThrottledDeployment {
         # 'JobDone' apenas su job termina, con el Success ya resuelto.
         #
         # Para qué existe: la GUI (Deploy-Gui.ps1) corre esta función en un
-        # runspace aparte del hilo de interfaz y drena esta cola cada 250 ms
-        # para pintar el avance. Sin esto, la única señal de progreso posible
+        # runspace aparte del hilo de interfaz y drena esta cola cada
+        # Ui.GuiPollMs (Deployment.Constants.psd1) para pintar el avance. Sin esto, la única señal de progreso posible
         # era mirar el archivo de log a mano, porque esta función no devuelve
         # NADA hasta que el último equipo terminó.
         #
@@ -77,8 +78,18 @@ function Invoke-ThrottledDeployment {
         # esperando. Es lo que hace posible el botón "Detener" de la GUI:
         # los jobs se frenan desde acá, que es el único scope donde Get-Job
         # los ve (Start-Job los registra por runspace).
-        [hashtable]$CancelFlag
+        [hashtable]$CancelFlag,
+
+        # La config ya resuelta (Get-DeploymentConfig). Las funciones públicas
+        # pasan la que ya leyeron; si no viene, se lee acá. Además de los
+        # valores propios del runner (formato del log, intervalo de sondeo),
+        # es lo que reciben las clases dentro de cada job: ver $initScript.
+        [object]$Settings
     )
+
+    if (-not $Settings) { $Settings = Get-DeploymentConfig -WarningAction SilentlyContinue }
+    if (-not $ThrottleLimit) { $ThrottleLimit = $Settings.DefaultThrottleLimit }
+    $dateFormat = $Settings.Log.DateFormat
 
     if ($ComputerList.Count -eq 0) {
         Write-Warning "La lista de equipos está vacía. Nada que hacer."
@@ -101,7 +112,7 @@ function Invoke-ThrottledDeployment {
         New-Item -Path $LogPath -ItemType File -Force | Out-Null
     }
     Add-Content -Path $LogPath -Encoding UTF8 -Value (
-        "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | INIT | Inicio ejecucion " +
+        "$(Get-Date -Format $dateFormat) | INIT | Inicio ejecucion " +
         "($($ComputerList.Count) equipos, throttle=$ThrottleLimit)"
     )
 
@@ -109,19 +120,31 @@ function Invoke-ThrottledDeployment {
     if ($missingClasses) {
         throw "No se encuentran estos archivos de clase: $($missingClasses -join ', ')"
     }
-    $dotSourceLines = $ClassPaths | ForEach-Object { ". '$_'" }
-    $initScript = [scriptblock]::Create($dotSourceLines -join "`n")
+    $initLines = @($ClassPaths | ForEach-Object { ". '$_'" })
+
+    # Las clases no pueden leer la config por su cuenta: el job es un proceso
+    # aparte, sin el módulo importado. Por eso se les deja la config ya
+    # resuelta (constantes + config.psd1) en [BaseDeploy]::Settings, como
+    # JSON embebido en el script de inicialización. Todas las clases
+    # extienden BaseDeploy (ver ARQUITECTURA.md 3.2), así que con cargar una
+    # clase ya existe ese tipo.
+    if ($ClassPaths.Count -gt 0) {
+        $settingsJson = ($Settings | ConvertTo-Json -Depth 6 -Compress).Replace("'", "''")
+        $initLines += "[BaseDeploy]::Settings = '$settingsJson' | ConvertFrom-Json"
+    }
+    $initScript = [scriptblock]::Create($initLines -join "`n")
 
     $total = $ComputerList.Count
     $started = 0
     $jobs = @()
     $cancelled = $false
 
-    # Con una cola de progreso conectada se hace polling más fino (250 ms en
-    # vez de 1 s): es lo que hace que la consola de la GUI se sienta "en vivo"
-    # en vez de avanzar a los saltos. Sin cola, se mantiene el intervalo de
-    # siempre para no cambiar el comportamiento de consola/tareas programadas.
-    $pollMs = if ($ProgressQueue) { 250 } else { 1000 }
+    # Con una cola de progreso conectada se hace polling más fino
+    # (Runner.LivePollMs en vez de Runner.PollMs): es lo que hace que la
+    # consola de la GUI se sienta "en vivo" en vez de avanzar a los saltos.
+    # Sin cola, se mantiene el intervalo de siempre para no cambiar el
+    # comportamiento de consola/tareas programadas.
+    $pollMs = if ($ProgressQueue) { $Settings.Runner.LivePollMs } else { $Settings.Runner.PollMs }
 
     # Marca los jobs que ya terminaron y todavía no fueron reportados a la
     # cola. Clave por Id (no por Name): Name es el hostname y, aunque
@@ -243,10 +266,10 @@ function Invoke-ThrottledDeployment {
     $jobs | Remove-Job -Force
 
     $finLine = if ($cancelled) {
-        "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | FIN | Procesamiento CANCELADO por el usuario ($($jobs.Count) de $total equipos encolados)"
+        "$(Get-Date -Format $dateFormat) | FIN | Procesamiento CANCELADO por el usuario ($($jobs.Count) de $total equipos encolados)"
     }
     else {
-        "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | FIN | Procesamiento finalizado"
+        "$(Get-Date -Format $dateFormat) | FIN | Procesamiento finalizado"
     }
     Add-Content -Path $LogPath -Encoding UTF8 -Value $finLine
 

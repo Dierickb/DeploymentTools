@@ -24,7 +24,7 @@ function Invoke-CopyFiles {
 
         [string]$LogPath,
 
-        [string]$LogMutexName = 'Global\copy_files',
+        [string]$LogMutexName,
 
         [switch]$ShowProgress,
 
@@ -50,8 +50,10 @@ function Invoke-CopyFiles {
     }
 
     $config = Get-DeploymentConfig
-    if (-not $ThrottleLimit) { $ThrottleLimit = $config.DefaultThrottleLimit }
-    if (-not $LogPath) { $LogPath = Join-Path $config.LogsPath 'copy_files.log' }
+    $task = $config.Tasks.copyfiles
+    if (-not $ThrottleLimit) { $ThrottleLimit = $task.ThrottleLimit }
+    if (-not $LogPath) { $LogPath = Join-Path $config.LogsPath $task.LogFile }
+    if (-not $LogMutexName) { $LogMutexName = $task.MutexName }
 
     $classPaths = @(Join-Path $PSScriptRoot '..\Classes\BaseDeploy.ps1')
 
@@ -99,7 +101,7 @@ function Invoke-CopyFiles {
     $results = Invoke-ThrottledDeployment -ComputerList $ComputerList -Action $action `
         -LogPath $LogPath -LogMutexName $LogMutexName -ThrottleLimit $ThrottleLimit `
         -ActionArgs $actionArgs -ClassPaths $classPaths -ShowProgress:$ShowProgress `
-        -ProgressQueue $ProgressQueue -CancelFlag $CancelFlag
+        -ProgressQueue $ProgressQueue -CancelFlag $CancelFlag -Settings $config
 
     return Write-DeploymentSummary -Results $results -LogPath $LogPath
 }

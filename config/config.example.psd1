@@ -5,6 +5,11 @@
     # config.psd1 NO deberia versionarse ni salir del equipo: es el unico
     # lugar del proyecto donde viven los datos del entorno (servidores,
     # UUID del scan). El codigo no tiene ninguno hardcodeado.
+    #
+    # Solo se pueden poner aca los valores AJUSTABLES: los de la seccion
+    # Tunable de Module\Deployment\Deployment.Constants.psd1, que es donde
+    # esta el default de cada uno. Cualquier otra clave se ignora con un
+    # aviso.
     # -----------------------------------------------------------------
 
     # Raiz del repositorio de instaladores.
@@ -27,16 +32,26 @@
     NessusScanUUID       = ''
 
     # -----------------------------------------------------------------
-    # De aca para abajo son valores estructurales: funcionan tal cual.
+    # De aca para abajo, todo es opcional: sin tocarlo, se usan los
+    # defaults de Deployment.Constants.psd1. Descomentar solo lo que haga
+    # falta cambiar. Los tiempos van en SEGUNDOS salvo que el nombre diga Ms.
     # -----------------------------------------------------------------
 
-    # Concurrencia por defecto si un comando no especifica -ThrottleLimit.
-    DefaultThrottleLimit = 5
+    # DefaultThrottleLimit = <equipos en paralelo por tarea>
+    # DefaultSuccessCodes  = @(<codigos de salida que cuentan como exito>)
+    # DefaultElapsedTime   = <timeout de psexec en segundos, 0 = sin timeout>
 
-    # Codigos de salida que MSI/instaladores tratan como exito
-    # (0=OK, 3010/1641/1707=reinicio pendiente, 2359302=ya instalado).
-    DefaultSuccessCodes  = @(0, 3010, 1641, 1707, 2359302)
+    # Por tarea (deployapp, copyfiles, copyinstall, remotecmd, kb, office,
+    # nessus). Solo ThrottleLimit y ElapsedTime:
+    # TaskDefaults = @{
+    #     kb          = @{ ElapsedTime = <segundos> }
+    #     copyinstall = @{ ThrottleLimit = <n>; ElapsedTime = <segundos> }
+    # }
 
-    # 0 = sin timeout. En SEGUNDOS (no milisegundos).
-    DefaultElapsedTime   = 0
+    # PsExecPath          = '<ruta a psexec.exe, si no esta en el PATH>'
+    # OfficeC2RClientPath = '<ruta a OfficeC2RClient.exe en los equipos>'
+
+    # PingTimeoutMs, LogMutexWaitMs, CopyVerifySettleSeconds,
+    # CopyVerifyRetries, CopyVerifyIntervalSeconds, PsExecStreamWaitMs,
+    # TenableTimeoutSeconds: tiempos internos, ver Deployment.Constants.psd1.
 }

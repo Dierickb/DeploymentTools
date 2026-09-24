@@ -16,7 +16,7 @@ Import-Module (Join-Path $root 'Module\Deployment\Deployment.psd1') -Force
 
 $config = Get-DeploymentConfig
 $computersPath = if (Test-Path $ComputersFile) { $ComputersFile } else { Join-Path $config.ImportsPath $ComputersFile }
-$computers = Read-ComputerList -Path $computersPath
+$computers = @(Read-ComputerList -Path $computersPath)
 
 $summary = Invoke-OfficeUpdate -ComputerList $computers -TargetVersion $TargetVersion `
     -ThrottleLimit $ThrottleLimit -UpdateTenableAfter:$UpdateTenableAfter

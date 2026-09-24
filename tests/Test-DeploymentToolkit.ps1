@@ -148,6 +148,14 @@ Test-Case "El modulo Deployment.psd1 importa sin errores" {
 . (Join-Path $moduleDir 'Classes\KbWindows.ps1')
 Get-ChildItem (Join-Path $moduleDir 'Private') -Filter '*.ps1' | ForEach-Object { . $_.FullName }
 
+# Config de referencia para las pruebas: solo las constantes, sin el
+# config.psd1 de quien corre la suite (que puede tener sus propios ajustes).
+$script:testConfig = Get-DeploymentConfig -ConfigPath (Join-Path $tmpDir "no_existe_$(Get-Random).psd1") -WarningAction SilentlyContinue
+
+# Dentro de un job, Invoke-ThrottledDeployment le carga la config a las
+# clases. Aca se usan directo, asi que hay que hacerlo a mano.
+[BaseDeploy]::Settings = $script:testConfig
+
 # -----------------------------------------------------------------
 # 3. Get-DeploymentRoot
 # -----------------------------------------------------------------
@@ -246,7 +254,7 @@ Test-Case "KbWindows.CompareKb detecta un KB faltante" {
 # -----------------------------------------------------------------
 # 8. Patrón de validación de -KbFolder (el bug del valor corrupto)
 # -----------------------------------------------------------------
-$kbFolderPattern = '^\d{4}-\d{2}(-\d{2})?[a-z0-9]*$'
+$kbFolderPattern = $script:testConfig.Validation.KbFolderPattern
 
 Test-Case "Patron -KbFolder acepta formatos validos" {
     foreach ($v in @('2026-09', '2026-05', '2026-08h2', '2026-08-24h2')) {
@@ -751,6 +759,172 @@ Test-Case "No hay IPs ni UUIDs hardcodeados en el codigo" {
     }
 
     Assert-Equal 0 $hallazgos.Count "datos del entorno que quedaron en el codigo: $($hallazgos -join ' | ')"
+}
+
+# -----------------------------------------------------------------
+# 20b. Read-ComputerList con un archivo vacio devuelve $null a quien lo
+#      asigna directo ("return @()" se desenrolla a nada), y pasarle $null
+#      a -ComputerList revienta con "Cannot bind argument ... because it is
+#      null". Los scripts\run_*.ps1 lo asignaban asi y fallaban justo en el
+#      caso que el README dice que es un aviso, no un error. La prueba 10 no
+#      lo veia porque le pasa @() directo a Invoke-CopyFiles.
+#
+#      Se prueba sobre el codigo y no corriendo un wrapper porque los
+#      scripts no aceptan -LogPath: el resumen caeria en logs\ del repo.
+# -----------------------------------------------------------------
+Test-Case "Read-ComputerList con archivo vacio + @() da una lista vacia que -ComputerList acepta" {
+    $tmp = Join-Path $tmpDir "test_empty3_$(Get-Random).txt"
+    $tmpLog = Join-Path $tmpDir "test_empty3_$(Get-Random).log"
+    "" | Set-Content -Path $tmp -Encoding UTF8
+    $computers = @(Read-ComputerList -Path $tmp -WarningAction SilentlyContinue)
+    $summary = Invoke-CopyFiles -ComputerList $computers -SourcePaths @('x') -ItemNames @('y') `
+        -RemoteSubPaths @('z') -LogPath $tmpLog -WarningAction SilentlyContinue
+    Assert-Equal 0 $summary.Total "lista vacia: 0 equipos, sin error de binding"
+    Remove-Item $tmp, $tmpLog -ErrorAction SilentlyContinue
+}
+
+Test-Case "Ningun punto de entrada asigna Read-ComputerList sin envolverlo en @()" {
+    $malos = @()
+    $entryPoints = @(Get-ChildItem -Path $root -Filter '*.ps1' -File) +
+                   @(Get-ChildItem -Path (Join-Path $root 'scripts') -Filter '*.ps1' -File)
+    foreach ($ep in $entryPoints) {
+        $errors = $null
+        $tokens = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($ep.FullName, [ref]$tokens, [ref]$errors)
+        $asignaciones = @($ast.FindAll({
+            param($nodo)
+            $nodo -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $nodo.Right -is [System.Management.Automation.Language.PipelineAst] -and
+            $nodo.Right.PipelineElements[0] -is [System.Management.Automation.Language.CommandAst] -and
+            $nodo.Right.PipelineElements[0].GetCommandName() -eq 'Read-ComputerList'
+        }, $true))
+        foreach ($a in $asignaciones) { $malos += "$($ep.Name):$($a.Extent.StartLineNumber)" }
+    }
+    Assert-Equal 0 $malos.Count "asignar sin @() deja `$null con un archivo vacio: $($malos -join ', ')"
+}
+
+# -----------------------------------------------------------------
+# 21. Deployment.Constants.psd1: la fuente unica de los valores fijos.
+#     Cada tarea del catalogo tiene su identidad ahi, y dos tareas nunca
+#     comparten log ni mutex (se pisarian corriendo a la vez).
+# -----------------------------------------------------------------
+Test-Case "Cada tarea del catalogo tiene log, mutex e imports propios en las constantes" {
+    $problemas = @()
+    foreach ($t in (Get-DeploymentTaskCatalog -Config $script:testConfig)) {
+        $task = $script:testConfig.Tasks.($t.Id)
+        if (-not $task) { $problemas += "$($t.Id): no esta en Tasks de Deployment.Constants.psd1"; continue }
+        foreach ($clave in @('LogFile', 'MutexName', 'ImportFile', 'ThrottleLimit')) {
+            if (-not $task.$clave) { $problemas += "$($t.Id): falta $clave" }
+        }
+    }
+    $todas = @($script:testConfig.Tasks.PSObject.Properties.Value)
+    foreach ($clave in @('LogFile', 'MutexName')) {
+        $repetidos = @($todas | Group-Object -Property $clave | Where-Object { $_.Count -gt 1 })
+        foreach ($r in $repetidos) { $problemas += "$clave '$($r.Name)' compartido por: $(($r.Group.Id) -join ', ')" }
+    }
+    Assert-Equal 0 $problemas.Count ($problemas -join ' | ')
+}
+
+# -----------------------------------------------------------------
+# 22. config.psd1 solo puede sobrescribir lo ajustable (seccion Tunable).
+#     Lo fijo, como el nombre de mutex de una tarea, se ignora con aviso.
+# -----------------------------------------------------------------
+Test-Case "config.psd1 sobrescribe lo ajustable e ignora lo fijo" {
+    $tmp = Join-Path $tmpDir "test_config_$(Get-Random).psd1"
+    @'
+@{
+    DefaultThrottleLimit = 9
+    TaskDefaults = @{
+        kb        = @{ ElapsedTime = 1200 }
+        copyfiles = @{ LogFile = 'otro.log' }
+    }
+    Tasks = @{ kb = @{ MutexName = 'Global\otro' } }
+    Log   = @{ DateFormat = 'dd/MM' }
+}
+'@ | Set-Content -Path $tmp -Encoding UTF8
+
+    $warn = $null
+    $cfg = Get-DeploymentConfig -ConfigPath $tmp -WarningAction SilentlyContinue -WarningVariable warn
+    Remove-Item $tmp -ErrorAction SilentlyContinue
+
+    Assert-Equal 9 $cfg.DefaultThrottleLimit "DefaultThrottleLimit es ajustable"
+    Assert-Equal 9 $cfg.Tasks.deployapp.ThrottleLimit "una tarea sin TaskDefaults hereda DefaultThrottleLimit"
+    Assert-Equal 1200 $cfg.Tasks.kb.ElapsedTime "TaskDefaults.kb.ElapsedTime es ajustable"
+    Assert-Equal $script:testConfig.Tasks.copyinstall.ThrottleLimit $cfg.Tasks.copyinstall.ThrottleLimit "el TaskDefaults de las constantes gana sobre DefaultThrottleLimit"
+    Assert-Equal $script:testConfig.Tasks.copyfiles.LogFile $cfg.Tasks.copyfiles.LogFile "LogFile NO es ajustable por TaskDefaults"
+    Assert-Equal $script:testConfig.Tasks.kb.MutexName $cfg.Tasks.kb.MutexName "Tasks NO es ajustable"
+    Assert-Equal $script:testConfig.Log.DateFormat $cfg.Log.DateFormat "Log NO es ajustable"
+    Assert-Equal 3 @($warn).Count "deberia avisar por cada clave ignorada (TaskDefaults.copyfiles.LogFile, Tasks, Log)"
+}
+
+# -----------------------------------------------------------------
+# 23. Un default por tarea, el mismo en todas las interfaces. Antes el
+#     timeout de "Copiar e instalar" era 15 min en la GUI/web y 0 en el
+#     menu, scripts\ y el modulo.
+# -----------------------------------------------------------------
+Test-Case "El catalogo muestra los mismos defaults por tarea que usa el modulo" {
+    $problemas = @()
+    foreach ($t in (Get-DeploymentTaskCatalog -Config $script:testConfig)) {
+        $task = $script:testConfig.Tasks.($t.Id)
+        if ($t.Throttle -ne $task.ThrottleLimit) { $problemas += "$($t.Id): throttle $($t.Throttle) vs $($task.ThrottleLimit)" }
+        if ($t.ImportFile -ne $task.ImportFile) { $problemas += "$($t.Id): ImportFile" }
+        if ($t.LogFile -ne $task.LogFile) { $problemas += "$($t.Id): LogFile" }
+        $campoTimeout = @($t.Fields | Where-Object { $_.Type -eq 'Minutes' }) | Select-Object -First 1
+        if ($campoTimeout -and ([int]$campoTimeout.Default * 60) -ne $task.ElapsedTime) {
+            $problemas += "$($t.Id): timeout $($campoTimeout.Default) min vs $($task.ElapsedTime) s"
+        }
+    }
+    Assert-Equal 0 $problemas.Count ($problemas -join ' | ')
+    Assert-Equal 900 $script:testConfig.Tasks.copyinstall.ElapsedTime "Copiar e instalar: 15 minutos por defecto"
+}
+
+# -----------------------------------------------------------------
+# 24. -KbFolder se valida en el cuerpo (el patron vive en las constantes),
+#     antes de levantar un solo job.
+# -----------------------------------------------------------------
+Test-Case "Invoke-KbDeployment rechaza un -KbFolder invalido con mensaje claro" {
+    $mensaje = ''
+    try {
+        Invoke-KbDeployment -ComputerList @() -KbPatch 'KB1' -KbFolder "2026-08+++$([char]0x00B4)" -WarningAction SilentlyContinue | Out-Null
+    }
+    catch { $mensaje = $_.Exception.Message }
+    Assert-True ($mensaje -like '*-KbFolder*YYYY-MM*') "deberia explicar el formato, y decia: '$mensaje'"
+}
+
+# -----------------------------------------------------------------
+# 25. Que no vuelvan los magic strings: ningun valor de texto de
+#     Deployment.Constants.psd1 puede aparecer escrito como literal en el
+#     codigo. Se miran los tokens de string (no los comentarios ni los
+#     mensajes que lo mencionan dentro de un texto mas largo).
+# -----------------------------------------------------------------
+Test-Case "Ningun valor de Deployment.Constants.psd1 esta repetido como literal en el codigo" {
+    $constPath = Join-Path $moduleDir 'Deployment.Constants.psd1'
+    $const = Import-PowerShellDataFile -Path $constPath
+
+    $valores = @()
+    foreach ($task in $const.Tasks.Values) { $valores += @($task.Values | Where-Object { $_ -is [string] }) }
+    foreach ($seccion in $const.Keys | Where-Object { $_ -notin @('Tunable', 'Tasks') }) {
+        $valores += @($const[$seccion].Values | Where-Object { $_ -is [string] })
+    }
+    $valores += @($const.Tunable.Values | Where-Object { $_ -is [string] })
+    $valores = @($valores | Where-Object { $_ } | Select-Object -Unique)
+
+    $hallazgos = @()
+    $archivos = @(Get-ChildItem -Path $root -Include '*.ps1', '*.psm1' -Recurse -File |
+                  Where-Object { $_.FullName -ne $PSCommandPath })
+    foreach ($f in $archivos) {
+        $errors = $null
+        $tokens = $null
+        [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+        $strings = @($tokens | Where-Object { $_ -is [System.Management.Automation.Language.StringToken] } |
+                     ForEach-Object { $_.Value })
+        foreach ($v in $valores) {
+            # Comparacion exacta, con mayusculas: un titulo de ventana como
+            # 'Imports' es texto de interfaz, no el nombre de la carpeta.
+            if ($strings -ccontains $v) { $hallazgos += "$($f.FullName.Substring($root.Length + 1)) : '$v'" }
+        }
+    }
+    Assert-Equal 0 $hallazgos.Count "valores de las constantes escritos a mano en el codigo: $($hallazgos -join ' | ')"
 }
 
 # -----------------------------------------------------------------

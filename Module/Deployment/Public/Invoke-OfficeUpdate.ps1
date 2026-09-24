@@ -59,7 +59,8 @@ function Invoke-OfficeUpdate {
 
         [bool]$ForceAppShutdown = $true,
 
-        [string]$OfficePath = 'C:\Program Files\Common Files\Microsoft Shared\ClickToRun\OfficeC2RClient.exe',
+        # Sin pasar: OfficeC2RClientPath de la config (ajustable en config.psd1).
+        [string]$OfficePath,
 
         [int]$ElapsedTime,
 
@@ -69,7 +70,7 @@ function Invoke-OfficeUpdate {
 
         [string]$LogPath,
 
-        [string]$LogMutexName = 'Global\office_update',
+        [string]$LogMutexName,
 
         [switch]$ShowProgress,
 
@@ -88,13 +89,16 @@ function Invoke-OfficeUpdate {
     }
 
     $config = Get-DeploymentConfig
-    if (-not $ThrottleLimit) { $ThrottleLimit = $config.DefaultThrottleLimit }
-    # DefaultElapsedTime de config.psd1 se aplica solo si no se paso
-    # -ElapsedTime explicito (0 = sin timeout).
-    if (-not $PSBoundParameters.ContainsKey('ElapsedTime')) { $ElapsedTime = $config.DefaultElapsedTime }
-    if (-not $LogPath) { $LogPath = Join-Path $config.LogsPath 'office_update.log' }
+    $task = $config.Tasks.office
+    if (-not $ThrottleLimit) { $ThrottleLimit = $task.ThrottleLimit }
+    # El default de la tarea se aplica solo si no se paso -ElapsedTime
+    # explicito (0 = sin timeout).
+    if (-not $PSBoundParameters.ContainsKey('ElapsedTime')) { $ElapsedTime = $task.ElapsedTime }
+    if (-not $OfficePath) { $OfficePath = $config.OfficeC2RClientPath }
+    if (-not $LogPath) { $LogPath = Join-Path $config.LogsPath $task.LogFile }
+    if (-not $LogMutexName) { $LogMutexName = $task.MutexName }
 
-    $getVersionCommand = 'powershell -command "(Get-ItemProperty ''HKLM:\Software\Microsoft\Office\ClickToRun\Configuration'' -ErrorAction SilentlyContinue).VersionToReport"'
+    $getVersionCommand = "powershell -command `"(Get-ItemProperty '$($config.Office.VersionRegistryKey)' -ErrorAction SilentlyContinue).$($config.Office.VersionValueName)`""
 
     $updateCommand = "`"$OfficePath`" /update user displaylevel=true forceappshutdown=$ForceAppShutdown"
     if ($UpdateToVersion) {
@@ -188,7 +192,7 @@ function Invoke-OfficeUpdate {
     $results = Invoke-ThrottledDeployment -ComputerList $ComputerList -Action $action `
         -LogPath $LogPath -LogMutexName $LogMutexName -ThrottleLimit $ThrottleLimit `
         -ActionArgs $actionArgs -ClassPaths $classPaths -ShowProgress:$ShowProgress `
-        -ProgressQueue $ProgressQueue -CancelFlag $CancelFlag
+        -ProgressQueue $ProgressQueue -CancelFlag $CancelFlag -Settings $config
 
     return Write-DeploymentSummary -Results $results -LogPath $LogPath
 }

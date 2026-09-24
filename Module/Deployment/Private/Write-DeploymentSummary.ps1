@@ -34,7 +34,8 @@ function Write-DeploymentSummary {
     Write-Host "===================================================" -ForegroundColor Cyan
 
     if ($LogPath) {
-        $summaryLine = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | RESUMEN | Total=$total OK=$($ok.Count) Fallidos=$($failed.Count)" +
+        $dateFormat = (Get-DeploymentConstants).Log.DateFormat
+        $summaryLine = "$(Get-Date -Format $dateFormat) | RESUMEN | Total=$total OK=$($ok.Count) Fallidos=$($failed.Count)" +
             $(if ($failed.Count -gt 0) { " | Equipos con error: " + (($failed | ForEach-Object { $_.Equipo }) -join ', ') } else { "" })
         Add-Content -Path $LogPath -Value $summaryLine -Encoding UTF8
     }

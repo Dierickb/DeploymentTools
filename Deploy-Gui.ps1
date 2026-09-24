@@ -20,7 +20,8 @@
       - Ese runspace le pasa a Invoke-ThrottledDeployment una cola
         thread-safe (-ProgressQueue) donde se reporta cada equipo que
         arranca y cada uno que termina.
-      - El hilo de UI corre un DispatcherTimer cada 250 ms que (a) drena
+      - El hilo de UI corre un DispatcherTimer cada Ui.GuiPollMs
+        (Deployment.Constants.psd1) que (a) drena
         esa cola y (b) lee las lineas NUEVAS del archivo de log, y con eso
         pinta la consola, la barra de progreso y los contadores. De ahi que
         se vea avanzar en vivo en vez de quedarse mudo hasta el final.
@@ -54,8 +55,10 @@
     tarea no puede correr dos veces a la vez porque compartiria el log.
 
 .PARAMETER MaxTareas
-    Cuantas tareas distintas pueden correr a la vez. Por defecto 2. Ojo con
-    la carga: la concurrencia real es la suma de los throttle de cada tarea.
+    Cuantas tareas distintas pueden correr a la vez, de 1 a la cantidad de
+    tareas del catalogo. Sin pasar: Ui.DefaultMaxTasks de
+    Module\Deployment\Deployment.Constants.psd1. Ojo con la carga: la
+    concurrencia real es la suma de los throttle de cada tarea.
 
 .EXAMPLE
     .\Deploy-Gui.ps1
@@ -69,8 +72,9 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateRange(1, 7)]
-    [int]$MaxTareas = 2
+    # Default y rango se resuelven despues de importar el modulo (seccion 1):
+    # un [ValidateRange()] solo acepta literales.
+    [int]$MaxTareas
 )
 
 # ---------------------------------------------------------------------
@@ -115,10 +119,9 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
     $hostExe = (Get-Process -Id $PID).Path
     Write-Host "Relanzando en modo STA (WPF lo requiere)..." -ForegroundColor Yellow
     $env:DEPLOYGUI_RELANZADO = '1'
-    Start-Process -FilePath $hostExe -ArgumentList @(
-        '-STA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
-        '-MaxTareas', $MaxTareas
-    )
+    $relaunchArgs = @('-STA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+    if ($PSBoundParameters.ContainsKey('MaxTareas')) { $relaunchArgs += @('-MaxTareas', $MaxTareas) }
+    Start-Process -FilePath $hostExe -ArgumentList $relaunchArgs
     return
 }
 
@@ -142,7 +145,13 @@ $script:Config = Get-DeploymentConfig -WarningAction SilentlyContinue
 #    que las dos no pueden quedar desincronizadas. Agregar una tarea se
 #    hace una sola vez, en Public\Get-DeploymentTaskCatalog.ps1.
 # ---------------------------------------------------------------------
-$script:Tasks = Get-DeploymentTaskCatalog
+$script:Tasks = Get-DeploymentTaskCatalog -Config $script:Config
+
+if (-not $PSBoundParameters.ContainsKey('MaxTareas')) { $MaxTareas = $script:Config.Ui.DefaultMaxTasks }
+if ($MaxTareas -lt 1 -or $MaxTareas -gt $script:Tasks.Count) {
+    Write-Host "-MaxTareas tiene que estar entre 1 y $($script:Tasks.Count) (la cantidad de tareas)." -ForegroundColor Red
+    return
+}
 
 # ---------------------------------------------------------------------
 # 2. XAML
@@ -1362,7 +1371,7 @@ function Start-Deployment {
     # Un solo timer para todas las corridas.
     if (-not $script:Timer) {
         $script:Timer = New-Object System.Windows.Threading.DispatcherTimer
-        $script:Timer.Interval = [TimeSpan]::FromMilliseconds(250)
+        $script:Timer.Interval = [TimeSpan]::FromMilliseconds($script:Config.Ui.GuiPollMs)
         $script:Timer.Add_Tick({ Update-FromWorker })
     }
     $script:Timer.Start()
@@ -1674,7 +1683,7 @@ function Copy-DetailHostnames {
     $script:StatusText.Text = "$($hosts.Count) hostnames copiados al portapapeles."
     if (-not $script:CopyTimer) {
         $script:CopyTimer = New-Object System.Windows.Threading.DispatcherTimer
-        $script:CopyTimer.Interval = [TimeSpan]::FromMilliseconds(1500)
+        $script:CopyTimer.Interval = [TimeSpan]::FromMilliseconds($script:Config.Ui.CopyFeedbackMs)
         $script:CopyTimer.Add_Tick({
             $script:BtnCopyDetail.Content = 'Copiar hostnames'
             $script:CopyTimer.Stop()
