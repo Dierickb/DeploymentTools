@@ -254,6 +254,29 @@ function Invoke-MenuNessusScan {
     Invoke-NessusScan -ComputerList $computers -ThrottleLimit $throttle -ShowProgress | Out-Null
 }
 
+function Invoke-MenuPingCheck {
+    Write-Title "Verificar conectividad (ping)"
+    $config = Get-DeploymentConfig
+    $task = $config.Tasks.ping
+    $computers = Get-ComputerListInteractive -ImportsPath $config.ImportsPath
+    if ($computers.Count -eq 0) { Write-Host "Lista vacía, cancelado." -ForegroundColor Yellow; return }
+    Show-Preview $computers
+    $throttle = [int](Read-ValueOrDefault "Throttle limit" $task.ThrottleLimit)
+
+    if (-not (Read-YesNo "¿Hacer ping a $($computers.Count) equipos?")) { return }
+
+    $summary = Invoke-PingCheck -ComputerList $computers -ThrottleLimit $throttle -ShowProgress
+
+    # El resumen ya lista los que no respondieron, con el motivo. Para esta
+    # tarea también interesan los que sí están en red, uno por línea para
+    # poder copiarlos a un .txt de imports\.
+    if ($summary.Ok -gt 0) {
+        Write-Host ""
+        Write-Host "Equipos en red:" -ForegroundColor Green
+        $summary.Succeeded | ForEach-Object { Write-Host "  $($_.Equipo)" }
+    }
+}
+
 function Show-RecentLogs {
     Write-Title "Logs recientes"
     $config = Get-DeploymentConfig
@@ -277,6 +300,7 @@ $menuOptions = @(
     "Instalar KB de Windows"
     "Actualizar Office"
     "Disparar scan de Nessus/Tenable"
+    "Verificar conectividad (ping)"
     "Ver logs recientes"
     "Salir"
 )
@@ -294,8 +318,9 @@ while ($true) {
             5 { Invoke-MenuKbDeployment }
             6 { Invoke-MenuOfficeUpdate }
             7 { Invoke-MenuNessusScan }
-            8 { Show-RecentLogs }
-            9 { Write-Host "Chau."; return }
+            8 { Invoke-MenuPingCheck }
+            9 { Show-RecentLogs }
+            10 { Write-Host "Chau."; return }
         }
     }
     catch {

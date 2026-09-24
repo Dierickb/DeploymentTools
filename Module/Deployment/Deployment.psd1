@@ -18,7 +18,7 @@
     # se exporta aunque este en Public\. Hay una prueba que compara las dos
     # listas.
     FunctionsToExport  = @(
-        # Las 7 tareas
+        # Las 8 tareas
         'Invoke-DeployApp'
         'Invoke-CopyFiles'
         'Invoke-CopyInstall'
@@ -26,6 +26,7 @@
         'Invoke-KbDeployment'
         'Invoke-OfficeUpdate'
         'Invoke-NessusScan'
+        'Invoke-PingCheck'
 
         # Lo que los puntos de entrada necesitan antes de llamar a una tarea
         'Get-DeploymentConfig'

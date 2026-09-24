@@ -46,6 +46,8 @@
             # Copiar+instalar suele ser pesado: de a un equipo y 15 minutos.
             copyinstall = @{ ThrottleLimit = 1; ElapsedTime = 900 }
             kb          = @{ ElapsedTime = 600 }
+            # Solo ping: liviano, se puede atender mas equipos a la vez.
+            ping        = @{ ThrottleLimit = 10 }
         }
 
         # --- Herramientas ---
@@ -76,6 +78,7 @@
         kb          = @{ LogFile = 'kb_deploy.log';      MutexName = 'Global\kb_deploy';        ImportFile = 'computers.txt' }
         office      = @{ LogFile = 'office_update.log';  MutexName = 'Global\office_update';    ImportFile = 'office_update_computers.txt' }
         nessus      = @{ LogFile = 'nessus_scan.log';    MutexName = 'Global\nessus_scan';      ImportFile = 'nessus_scan_computers.txt' }
+        ping        = @{ LogFile = 'ping_check.log';     MutexName = 'Global\ping_check';       ImportFile = 'computers.txt' }
         # No es una tarea del catalogo: la usa Invoke-SimulatedDeployment.
         simulation  = @{ LogFile = 'simulacion.log';     MutexName = 'Global\simulated_deploy'; ImportFile = '' }
     }
@@ -108,6 +111,24 @@
         KbFolderDefaultFormat = 'yyyy-MM'
         # Numero de version de 2 a 4 partes (16.0.19929.20220).
         VersionPattern  = '^\d+(\.\d+){1,3}$'
+    }
+
+    Ping = @{
+        # Motivo legible de por que un equipo no respondio el ping, segun el
+        # codigo que da .NET: el IPStatus de la respuesta (TimedOut, ...) o,
+        # si el ping ni siquiera salio, el SocketErrorCode de la excepcion
+        # (HostNotFound, ...). Un codigo que no este aca se muestra tal cual,
+        # con el mensaje original del sistema.
+        FailureReasons = @{
+            TimedOut                      = 'no respondio a tiempo: apagado, fuera de la red, o con el ping (ICMP) bloqueado por firewall'
+            DestinationHostUnreachable    = 'la red no llega al equipo (host inalcanzable)'
+            DestinationNetworkUnreachable = 'no hay ruta hasta la red del equipo'
+            DestinationUnreachable        = 'destino inalcanzable'
+            TtlExpired                    = 'el ping se perdio en el camino (TTL agotado)'
+            HostNotFound                  = 'el nombre no existe en DNS: revisar que este bien escrito o que el equipo siga dado de alta'
+            NoData                        = 'el nombre existe en DNS pero no tiene direccion IP'
+            TryAgain                      = 'el DNS no respondio; conviene reintentar'
+        }
     }
 
     Office = @{
